@@ -39,7 +39,7 @@ mod proxies {
     }
 
     #[derive(Clone, Debug, Deserialize, Serialize)]
-    pub struct Proxies(Vec<Proxy>);
+    pub struct Proxies(pub Vec<Proxy>);
 
     impl Proxies {
         fn insert_head(&mut self, mut from: Vec<Proxy>) -> &mut Self {
@@ -72,10 +72,15 @@ mod proxy_groups {
         pub fn proxies(&self) -> &Vec<String> {
             &self.proxies
         }
+
+        pub fn remove(&mut self, index: usize) -> &mut Self {
+            self.proxies.remove(index);
+            self
+        }
     }
 
     #[derive(Clone, Debug, Deserialize, Serialize)]
-    pub struct ProxyGroups(Vec<ProxyGroup>);
+    pub struct ProxyGroups(pub Vec<ProxyGroup>);
 }
 
 mod rules {
@@ -94,8 +99,8 @@ mod rules {
     }
 }
 mod configure {
-
     use super::{Proxies, ProxyGroups, Rules};
+    use log::{info, warn};
 
     use super::{Deserialize, Serialize};
 
@@ -129,6 +134,27 @@ mod configure {
         }
         pub fn proxies(&self) -> &Proxies {
             &self.proxies
+        }
+
+        pub fn optimize(&mut self) -> &mut Self {
+            let mut v = vec![];
+            for element in &self.proxies.0 {
+                if element.password().is_empty() {
+                    v.push(element.name())
+                }
+            }
+            for element in &mut self.proxy_groups.0 {
+                for item in &v {
+                    let ret = element.proxies().iter().position(|x| x.eq(item));
+                    if let None = ret {
+                        warn!("Not found: {:?}", item);
+                        continue;
+                    }
+                    element.remove(ret.unwrap());
+                }
+            }
+            info!("Remove {} empty password elements.", v.len());
+            self
         }
     }
 }
