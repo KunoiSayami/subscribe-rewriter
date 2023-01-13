@@ -18,23 +18,8 @@ mod proxies {
         pub fn name(&self) -> &str {
             &self.name
         }
-        pub fn proxy_type(&self) -> &str {
-            &self.type_
-        }
-        pub fn server(&self) -> &str {
-            &self.server
-        }
-        pub fn port(&self) -> u16 {
-            self.port
-        }
-        pub fn cipher(&self) -> &str {
-            &self.cipher
-        }
         pub fn password(&self) -> &str {
             &self.password
-        }
-        pub fn udp(&self) -> bool {
-            self.udp
         }
     }
 
@@ -46,14 +31,6 @@ mod proxies {
             from.extend(self.0.iter().map(|s| s.clone()));
             self.0 = from;
             self
-        }
-
-        pub fn get_element(&self) -> Vec<Proxy> {
-            self.0.clone()
-        }
-
-        pub fn len(&self) -> usize {
-            self.0.len()
         }
 
         pub fn get_vec(&self) -> &Vec<Proxy> {
@@ -129,7 +106,7 @@ mod rules {
     pub struct Rules(Vec<String>);
 
     impl Rules {
-        fn insert_head(&mut self, mut from: Vec<String>) -> &mut Self {
+        pub fn insert_head(&mut self, mut from: Vec<String>) -> &mut Self {
             from.extend(self.0.iter().map(|s| s.clone()));
             self.0 = from;
             self
@@ -174,11 +151,8 @@ mod remote_configure {
         pub fn mut_proxy_groups(&mut self) -> &mut ProxyGroups {
             &mut self.proxy_groups
         }
-        pub fn rules(&self) -> &Rules {
-            &self.rules
-        }
-        pub fn proxies(&self) -> &Proxies {
-            &self.proxies
+        pub fn mut_rules(&mut self) -> &mut Rules {
+            &mut self.rules
         }
         pub fn mut_proxies(&mut self) -> &mut Proxies {
             &mut self.proxies

@@ -3,10 +3,13 @@ mod parser;
 use crate::parser::{Configure, ProxyGroup, RemoteConfigure};
 use anyhow::anyhow;
 use clap::{arg, command};
-use log::LevelFilter;
+use log::{debug, LevelFilter};
+use once_cell::sync::OnceCell;
 use tokio::io::AsyncWriteExt;
 
 const DEFAULT_CONFIG_LOCATION: &str = "config.yaml";
+const DEFAULT_OUTPUT_LOCATION: &str = "output.yaml";
+static OUTPUT_LOCATION: OnceCell<String> = OnceCell::new();
 
 async fn fetch_remote_file(url: &String) -> anyhow::Result<(RemoteConfigure, String)> {
     let client = reqwest::ClientBuilder::new().build().unwrap();
@@ -113,14 +116,24 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
         .mut_proxies()
         .insert_head(local.proxies().get_vec().clone());
 
+    remote
+        .mut_rules()
+        .insert_head(local.rules().get_element().clone());
+
     Ok(remote)
 }
 
 async fn output(
-    path: String,
+    path: &String,
     additional_msg: String,
     configure_file: RemoteConfigure,
 ) -> anyhow::Result<()> {
+    let s = serde_yaml::to_string(&configure_file)
+        .map_err(|e| anyhow!("Got error while output configure file, {:?}", e))?;
+    if path.eq("-") {
+        output_to_stdout(additional_msg, s);
+        return Ok(());
+    }
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
         .write(true)
@@ -128,8 +141,6 @@ async fn output(
         .open(path)
         .await
         .map_err(|e| anyhow!("Got error while open file: {:?}", e))?;
-    let s = serde_yaml::to_string(&configure_file)
-        .map_err(|e| anyhow!("Got error while output configure file, {:?}", e))?;
     file.write_all(additional_msg.as_bytes())
         .await
         .map_err(|e| anyhow!("Got error while write additional messages: {:?}", e))?;
@@ -137,6 +148,10 @@ async fn output(
         .await
         .map_err(|e| anyhow!("Got error while write file: {:?}", e))?;
     Ok(())
+}
+
+fn output_to_stdout(additional_msg: String, configure_file: String) {
+    println!("{}{}", additional_msg, configure_file);
 }
 
 async fn async_main(subscribe_url: String, configure_file: String) -> anyhow::Result<()> {
@@ -150,7 +165,7 @@ async fn async_main(subscribe_url: String, configure_file: String) -> anyhow::Re
     let (remote_file, additional_message) = fetch_remote_file(&subscribe_url).await?;
     let result_configure = apply_change(remote_file, local_file)?;
     output(
-        "output.yaml".to_string(),
+        OUTPUT_LOCATION.get().unwrap(),
         additional_message,
         result_configure,
     )
@@ -163,6 +178,7 @@ fn main() -> anyhow::Result<()> {
         .args(&[
             arg!(<url> "Remote subscribe link"),
             arg!(--config [configure_file] "Specify configure location"),
+            arg!(--output [output_file] "Specify output location"),
         ])
         .get_matches();
 
@@ -170,6 +186,18 @@ fn main() -> anyhow::Result<()> {
         .filter_module("rustls", LevelFilter::Warn)
         .filter_module("reqwest", LevelFilter::Warn)
         .init();
+
+    OUTPUT_LOCATION
+        .set(
+            if let Some(output_location) = matches.get_one::<String>("output") {
+                output_location.clone()
+            } else {
+                DEFAULT_OUTPUT_LOCATION.to_string()
+            },
+        )
+        .unwrap();
+
+    debug!("Output to {}", OUTPUT_LOCATION.get().unwrap());
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
