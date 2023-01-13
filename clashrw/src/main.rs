@@ -8,7 +8,7 @@ use tokio::io::AsyncWriteExt;
 
 const DEFAULT_CONFIG_LOCATION: &str = "config.yaml";
 
-async fn fetch_remote_file(url: &String) -> anyhow::Result<RemoteConfigure> {
+async fn fetch_remote_file(url: &String) -> anyhow::Result<(RemoteConfigure, String)> {
     let client = reqwest::ClientBuilder::new().build().unwrap();
     let ret = client
         .get(url)
@@ -21,12 +21,19 @@ async fn fetch_remote_file(url: &String) -> anyhow::Result<RemoteConfigure> {
         .await
         .map_err(|e| anyhow!("Get error while obtain text: {:?}", e))?;
 
+    let mut additional = txt
+        .split('\n')
+        .filter(|s| s.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    additional.push('\n');
+
     let mut ret = serde_yaml::from_str::<RemoteConfigure>(txt.as_str())
         .map_err(|e| anyhow!("Got error while decode remote file: {:?}", e))?;
 
     ret.optimize();
 
-    Ok(ret)
+    Ok((ret, additional))
 }
 
 fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result<RemoteConfigure> {
@@ -109,7 +116,11 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
     Ok(remote)
 }
 
-async fn output(path: String, configure_file: RemoteConfigure) -> anyhow::Result<()> {
+async fn output(
+    path: String,
+    additional_msg: String,
+    configure_file: RemoteConfigure,
+) -> anyhow::Result<()> {
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
         .write(true)
@@ -119,6 +130,9 @@ async fn output(path: String, configure_file: RemoteConfigure) -> anyhow::Result
         .map_err(|e| anyhow!("Got error while open file: {:?}", e))?;
     let s = serde_yaml::to_string(&configure_file)
         .map_err(|e| anyhow!("Got error while output configure file, {:?}", e))?;
+    file.write_all(additional_msg.as_bytes())
+        .await
+        .map_err(|e| anyhow!("Got error while write additional messages: {:?}", e))?;
     file.write_all(s.as_bytes())
         .await
         .map_err(|e| anyhow!("Got error while write file: {:?}", e))?;
@@ -133,9 +147,14 @@ async fn async_main(subscribe_url: String, configure_file: String) -> anyhow::Re
             .as_str(),
     )
     .map_err(|e| anyhow!("Got error while parse local configure: {:?}", e))?;
-    let remote_file = fetch_remote_file(&subscribe_url).await?;
+    let (remote_file, additional_message) = fetch_remote_file(&subscribe_url).await?;
     let result_configure = apply_change(remote_file, local_file)?;
-    output("output.yaml".to_string(), result_configure).await?;
+    output(
+        "output.yaml".to_string(),
+        additional_message,
+        result_configure,
+    )
+    .await?;
     Ok(())
 }
 
