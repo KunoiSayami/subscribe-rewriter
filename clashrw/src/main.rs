@@ -11,7 +11,7 @@ const DEFAULT_CONFIG_LOCATION: &str = "config.yaml";
 const DEFAULT_OUTPUT_LOCATION: &str = "output.yaml";
 static OUTPUT_LOCATION: OnceCell<String> = OnceCell::new();
 
-async fn fetch_remote_file(url: &String) -> anyhow::Result<(RemoteConfigure, String)> {
+async fn fetch_remote_file(url: &str) -> anyhow::Result<(RemoteConfigure, String)> {
     let client = reqwest::ClientBuilder::new().build().unwrap();
     let ret = client
         .get(url)
@@ -154,15 +154,24 @@ fn output_to_stdout(additional_msg: String, configure_file: String) {
     println!("{}{}", additional_msg, configure_file);
 }
 
-async fn async_main(subscribe_url: String, configure_file: String) -> anyhow::Result<()> {
-    let local_file = serde_yaml::from_str(
+async fn async_main(configure_file: String, output_file: Option<&String>) -> anyhow::Result<()> {
+    let local_file: Configure = serde_yaml::from_str(
         tokio::fs::read_to_string(configure_file)
             .await
             .map_err(|e| anyhow!("Got error while read local configure: {:?}", e))?
             .as_str(),
     )
     .map_err(|e| anyhow!("Got error while parse local configure: {:?}", e))?;
-    let (remote_file, additional_message) = fetch_remote_file(&subscribe_url).await?;
+
+    OUTPUT_LOCATION
+        .set(if let Some(output_location) = output_file {
+            output_location.clone()
+        } else {
+            local_file.output_location().to_string()
+        })
+        .unwrap();
+
+    let (remote_file, additional_message) = fetch_remote_file(local_file.upstream()).await?;
     let result_configure = apply_change(remote_file, local_file)?;
     output(
         OUTPUT_LOCATION.get().unwrap(),
@@ -176,7 +185,6 @@ async fn async_main(subscribe_url: String, configure_file: String) -> anyhow::Re
 fn main() -> anyhow::Result<()> {
     let matches = command!()
         .args(&[
-            arg!(<url> "Remote subscribe link"),
             arg!(--config [configure_file] "Specify configure location"),
             arg!(--output [output_file] "Specify output location"),
         ])
@@ -187,16 +195,6 @@ fn main() -> anyhow::Result<()> {
         .filter_module("reqwest", LevelFilter::Warn)
         .init();
 
-    OUTPUT_LOCATION
-        .set(
-            if let Some(output_location) = matches.get_one::<String>("output") {
-                output_location.clone()
-            } else {
-                DEFAULT_OUTPUT_LOCATION.to_string()
-            },
-        )
-        .unwrap();
-
     debug!("Output to {}", OUTPUT_LOCATION.get().unwrap());
 
     tokio::runtime::Builder::new_multi_thread()
@@ -204,10 +202,10 @@ fn main() -> anyhow::Result<()> {
         .build()
         .unwrap()
         .block_on(async_main(
-            matches.get_one::<String>("url").unwrap().to_string(),
             matches
                 .get_one("config")
                 .map(|s: &String| s.to_string())
                 .unwrap_or_else(|| DEFAULT_CONFIG_LOCATION.to_string()),
+            matches.get_one::<String>("output"),
         ))
 }

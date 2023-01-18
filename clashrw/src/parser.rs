@@ -201,14 +201,23 @@ mod keyword {
 }
 
 mod configure {
-    use super::{Deserialize, Serialize};
+    use super::Deserialize;
     use super::{Keyword, Proxies, Rules};
 
-    #[derive(Clone, Debug, Deserialize, Serialize)]
+    use crate::DEFAULT_OUTPUT_LOCATION;
+
+    fn set_default_output_location() -> String {
+        DEFAULT_OUTPUT_LOCATION.to_string()
+    }
+
+    #[derive(Clone, Debug, Deserialize)]
     pub struct Configure {
+        upstream: String,
         rules: Rules,
         proxies: Proxies,
         keyword: Keyword,
+        #[serde(default = "set_default_output_location")]
+        output_location: String,
     }
 
     impl Configure {
@@ -220,6 +229,12 @@ mod configure {
         }
         pub fn keyword(&self) -> &Keyword {
             &self.keyword
+        }
+        pub fn upstream(&self) -> &str {
+            &self.upstream
+        }
+        pub fn output_location(&self) -> &str {
+            &self.output_location
         }
     }
 }
