@@ -171,6 +171,8 @@ async fn async_main(configure_file: String, output_file: Option<&String>) -> any
         })
         .unwrap();
 
+    debug!("Output to {}", OUTPUT_LOCATION.get().unwrap());
+
     let (remote_file, additional_message) = fetch_remote_file(local_file.upstream()).await?;
     let result_configure = apply_change(remote_file, local_file)?;
     output(
@@ -194,8 +196,6 @@ fn main() -> anyhow::Result<()> {
         .filter_module("rustls", LevelFilter::Warn)
         .filter_module("reqwest", LevelFilter::Warn)
         .init();
-
-    debug!("Output to {}", OUTPUT_LOCATION.get().unwrap());
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
