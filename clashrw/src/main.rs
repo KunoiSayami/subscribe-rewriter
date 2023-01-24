@@ -81,8 +81,8 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
     for proxy in local.proxies().get_vec() {
         for original_proxy in &interest_proxy {
             new_proxy_group.push(ProxyGroup::new_relay(
-                proxy.name().to_string(),
                 original_proxy.to_string(),
+                proxy.name().to_string(),
             ));
         }
     }

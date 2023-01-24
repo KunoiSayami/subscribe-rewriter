@@ -68,7 +68,7 @@ mod proxy_groups {
 
         pub fn new_relay(first: String, second: String) -> Self {
             Self {
-                name: format!("{} {}", first, second),
+                name: format!("{} {}", second, first),
                 type_: "relay".to_string(),
                 proxies: vec![first, second],
             }
