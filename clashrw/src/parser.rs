@@ -27,14 +27,13 @@ mod proxies {
     pub struct Proxies(pub Vec<Proxy>);
 
     impl Proxies {
-        pub fn insert_head(&mut self, mut from: Vec<Proxy>) -> &mut Self {
-            from.extend(self.0.iter().map(|s| s.clone()));
-            self.0 = from;
-            self
-        }
-
         pub fn get_vec(&self) -> &Vec<Proxy> {
             &self.0
+        }
+
+        pub fn set_vec(&mut self, v: Vec<Proxy>) -> &mut Self {
+            self.0 = v;
+            self
         }
     }
 }

@@ -112,9 +112,20 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
     new_proxy_group.extend(real_proxy_group);
 
     remote.mut_proxy_groups().set_vec(new_proxy_group);
-    remote
-        .mut_proxies()
-        .insert_head(local.proxies().get_vec().clone());
+    let mut new_proxy_pending = local.proxies().get_vec().clone();
+
+    new_proxy_pending.extend(
+        remote
+            .mut_proxies()
+            .get_vec()
+            .iter()
+            // TODO: Should reserve empty configure
+            .filter(|x| !x.password().is_empty())
+            .map(|x| x.clone())
+            .collect::<Vec<_>>(),
+    );
+
+    remote.mut_proxies().set_vec(new_proxy_pending);
 
     remote
         .mut_rules()
