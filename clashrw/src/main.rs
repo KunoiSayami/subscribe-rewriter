@@ -9,6 +9,9 @@ use tokio::io::AsyncWriteExt;
 
 const DEFAULT_CONFIG_LOCATION: &str = "config.yaml";
 const DEFAULT_OUTPUT_LOCATION: &str = "output.yaml";
+const DEFAULT_RELAY_SELECTOR_NAME: &str = "Relay selector";
+const DEFAULT_RELAY_BACKEND_SELECTOR_NAME: &str = "Relay backend selector";
+const DEFAULT_RELAY_NAME: &str = "Use Relay";
 static OUTPUT_LOCATION: OnceCell<String> = OnceCell::new();
 
 async fn fetch_remote_file(url: &str) -> anyhow::Result<(RemoteConfigure, String)> {
@@ -78,20 +81,37 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
 
     // Build new relay proxy group
     let mut new_proxy_group = vec![];
-    for proxy in local.proxies().get_vec() {
-        for original_proxy in &interest_proxy {
-            new_proxy_group.push(ProxyGroup::new_relay(
-                original_proxy.to_string(),
-                proxy.name().to_string(),
-            ));
-        }
-    }
+
+    let mut relay_selector = ProxyGroup::new_select(
+        DEFAULT_RELAY_SELECTOR_NAME.to_string(),
+        local
+            .proxies()
+            .get_vec()
+            .iter()
+            .map(|proxy| proxy.name().to_string())
+            .collect(),
+    );
+    relay_selector.insert_direct();
+
+    let relay_backend_selector = ProxyGroup::new_select(
+        DEFAULT_RELAY_BACKEND_SELECTOR_NAME.to_string(),
+        interest_proxy.iter().map(|x| x.to_string()).collect(),
+    );
+
+    let base_relay = ProxyGroup::new_relay(
+        DEFAULT_RELAY_NAME.to_string(),
+        DEFAULT_RELAY_BACKEND_SELECTOR_NAME.to_string(),
+        DEFAULT_RELAY_SELECTOR_NAME.to_string(),
+    );
+
+    new_proxy_group.extend(vec![
+        relay_selector,
+        relay_backend_selector,
+        base_relay.clone(),
+    ]);
 
     // Build new proxy group
-    let mut proxy_group_items = new_proxy_group
-        .iter()
-        .map(|proxy| proxy.name().to_string())
-        .collect::<Vec<String>>();
+    let mut proxy_group_items = vec![base_relay.name().to_string()];
     proxy_group_items.extend(proxy_group_str);
 
     let real_proxy_group = remote

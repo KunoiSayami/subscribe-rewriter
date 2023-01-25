@@ -66,13 +66,34 @@ mod proxy_groups {
             self
         }
 
-        pub fn new_relay(first: String, second: String) -> Self {
+        pub fn new_relay(name: String, first: String, second: String) -> Self {
             Self {
-                name: format!("{} {}", second, first),
+                name,
                 type_: "relay".to_string(),
                 proxies: vec![first, second],
             }
         }
+
+        pub fn new_select(name: String, proxies: Vec<String>) -> Self {
+            Self {
+                name,
+                type_: "select".to_string(),
+                proxies,
+            }
+        }
+
+        pub fn insert_direct(&mut self) -> &mut Self {
+            debug_assert!({
+                if let Some(proxy) = self.proxies.last() {
+                    !proxy.eq("DIRECT")
+                } else {
+                    true
+                }
+            });
+            self.proxies.push("DIRECT".to_string());
+            self
+        }
+
         pub fn set_proxies(&mut self, proxies: Vec<String>) {
             self.proxies = proxies;
         }
