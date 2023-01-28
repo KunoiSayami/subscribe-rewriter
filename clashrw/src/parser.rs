@@ -82,7 +82,7 @@ mod proxy_groups {
             }
         }
 
-        pub fn insert_direct(&mut self) -> &mut Self {
+        pub fn insert_direct(mut self) -> Self {
             debug_assert!({
                 if let Some(proxy) = self.proxies.last() {
                     !proxy.eq("DIRECT")

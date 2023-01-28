@@ -10,8 +10,10 @@ use tokio::io::AsyncWriteExt;
 const DEFAULT_CONFIG_LOCATION: &str = "config.yaml";
 const DEFAULT_OUTPUT_LOCATION: &str = "output.yaml";
 const DEFAULT_RELAY_SELECTOR_NAME: &str = "Relay selector";
+const DEFAULT_FORCE_RELAY_SELECTOR_NAME: &str = "Force relay selector";
 const DEFAULT_RELAY_BACKEND_SELECTOR_NAME: &str = "Relay backend selector";
 const DEFAULT_RELAY_NAME: &str = "Use Relay";
+const DEFAULT_FORCE_RELAY_NAME: &str = "Use Relay";
 static OUTPUT_LOCATION: OnceCell<String> = OnceCell::new();
 
 async fn fetch_remote_file(url: &str) -> anyhow::Result<(RemoteConfigure, String)> {
@@ -82,7 +84,7 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
     // Build new relay proxy group
     let mut new_proxy_group = vec![];
 
-    let mut relay_selector = ProxyGroup::new_select(
+    let relay_selector = ProxyGroup::new_select(
         DEFAULT_RELAY_SELECTOR_NAME.to_string(),
         local
             .proxies()
@@ -90,8 +92,17 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
             .iter()
             .map(|proxy| proxy.name().to_string())
             .collect(),
+    )
+    .insert_direct();
+    let force_relay_selector = ProxyGroup::new_select(
+        DEFAULT_FORCE_RELAY_SELECTOR_NAME.to_string(),
+        local
+            .proxies()
+            .get_vec()
+            .iter()
+            .map(|proxy| proxy.name().to_string())
+            .collect(),
     );
-    relay_selector.insert_direct();
 
     let relay_backend_selector = ProxyGroup::new_select(
         DEFAULT_RELAY_BACKEND_SELECTOR_NAME.to_string(),
@@ -104,10 +115,18 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
         DEFAULT_RELAY_SELECTOR_NAME.to_string(),
     );
 
+    let base_force_relay = ProxyGroup::new_relay(
+        DEFAULT_FORCE_RELAY_NAME.to_string(),
+        DEFAULT_RELAY_BACKEND_SELECTOR_NAME.to_string(),
+        DEFAULT_FORCE_RELAY_NAME.to_string(),
+    );
+
     new_proxy_group.extend(vec![
         relay_selector,
+        force_relay_selector,
         relay_backend_selector,
         base_relay.clone(),
+        base_force_relay.clone(),
     ]);
 
     // Build new proxy group
@@ -162,7 +181,7 @@ async fn output(
     let s = serde_yaml::to_string(&configure_file)
         .map_err(|e| anyhow!("Got error while output configure file, {:?}", e))?;
     if path.eq("-") {
-        output_to_stdout(additional_msg, s);
+        println!("{}{}", additional_msg, s);
         return Ok(());
     }
     let mut file = tokio::fs::OpenOptions::new()
@@ -179,10 +198,6 @@ async fn output(
         .await
         .map_err(|e| anyhow!("Got error while write file: {:?}", e))?;
     Ok(())
-}
-
-fn output_to_stdout(additional_msg: String, configure_file: String) {
-    println!("{}{}", additional_msg, configure_file);
 }
 
 async fn async_main(configure_file: String, output_file: Option<&String>) -> anyhow::Result<()> {
