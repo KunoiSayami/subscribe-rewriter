@@ -118,7 +118,7 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
     let base_force_relay = ProxyGroup::new_relay(
         DEFAULT_FORCE_RELAY_NAME.to_string(),
         DEFAULT_RELAY_BACKEND_SELECTOR_NAME.to_string(),
-        DEFAULT_FORCE_RELAY_NAME.to_string(),
+        DEFAULT_FORCE_RELAY_SELECTOR_NAME.to_string(),
     );
 
     new_proxy_group.extend(vec![
