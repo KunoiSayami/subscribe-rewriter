@@ -13,7 +13,7 @@ const DEFAULT_RELAY_SELECTOR_NAME: &str = "Relay selector";
 const DEFAULT_FORCE_RELAY_SELECTOR_NAME: &str = "Force relay selector";
 const DEFAULT_RELAY_BACKEND_SELECTOR_NAME: &str = "Relay backend selector";
 const DEFAULT_RELAY_NAME: &str = "Use Relay";
-const DEFAULT_FORCE_RELAY_NAME: &str = "Use Relay";
+const DEFAULT_FORCE_RELAY_NAME: &str = "Force Use Relay";
 static OUTPUT_LOCATION: OnceCell<String> = OnceCell::new();
 
 async fn fetch_remote_file(url: &str) -> anyhow::Result<(RemoteConfigure, String)> {
