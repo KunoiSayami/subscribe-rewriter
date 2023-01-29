@@ -149,17 +149,15 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
     Ok(remote)
 }
 
-async fn output(
-    path: &String,
-    additional_msg: String,
-    configure_file: RemoteConfigure,
-) -> anyhow::Result<()> {
+async fn output(path: &String, configure_file: RemoteConfigure) -> anyhow::Result<()> {
     let s = serde_yaml::to_string(&configure_file)
         .map_err(|e| anyhow!("Got error while output configure file, {:?}", e))?;
+
     if path.eq("-") {
-        println!("{}{}", additional_msg, s);
+        println!("{}", s);
         return Ok(());
     }
+
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
         .write(true)
@@ -167,12 +165,10 @@ async fn output(
         .open(path)
         .await
         .map_err(|e| anyhow!("Got error while open file: {:?}", e))?;
-    file.write_all(additional_msg.as_bytes())
-        .await
-        .map_err(|e| anyhow!("Got error while write additional messages: {:?}", e))?;
     file.write_all(s.as_bytes())
         .await
         .map_err(|e| anyhow!("Got error while write file: {:?}", e))?;
+
     Ok(())
 }
 
@@ -195,23 +191,18 @@ async fn async_main(configure_file: String, output_file: Option<&String>) -> any
 
     debug!("Output to {}", OUTPUT_LOCATION.get().unwrap());
 
-    let (remote_file, additional_message) = read_or_fetch(local_file.upstream()).await?;
+    let remote_file = read_or_fetch(local_file.upstream()).await?;
     let result_configure = apply_change(remote_file, local_file)?;
-    output(
-        OUTPUT_LOCATION.get().unwrap(),
-        additional_message,
-        result_configure,
-    )
-    .await?;
+    output(OUTPUT_LOCATION.get().unwrap(), result_configure).await?;
     Ok(())
 }
 
 fn main() -> anyhow::Result<()> {
     let matches = command!()
         .args(&[
+            arg!(--nocache "Disable cache"),
             arg!(--config [configure_file] "Specify configure location"),
             arg!(--output [output_file] "Specify output location"),
-            arg!(--no-cache "Disable cache"),
         ])
         .get_matches();
 
@@ -220,7 +211,7 @@ fn main() -> anyhow::Result<()> {
         .filter_module("reqwest", LevelFilter::Warn)
         .init();
 
-    DISABLE_CACHE.set(matches.get_flag("no-cache")).unwrap();
+    DISABLE_CACHE.set(matches.get_flag("nocache")).unwrap();
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
