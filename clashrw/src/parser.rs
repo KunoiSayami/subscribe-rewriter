@@ -82,6 +82,11 @@ mod proxy_groups {
             }
         }
 
+        pub fn insert_to_head(&mut self, proxy: String) -> &mut Self {
+            self.proxies.insert(0, proxy);
+            self
+        }
+
         pub fn insert_direct(mut self) -> Self {
             debug_assert!({
                 if let Some(proxy) = self.proxies.last() {
@@ -92,10 +97,6 @@ mod proxy_groups {
             });
             self.proxies.push("DIRECT".to_string());
             self
-        }
-
-        pub fn set_proxies(&mut self, proxies: Vec<String>) {
-            self.proxies = proxies;
         }
     }
 

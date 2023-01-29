@@ -60,24 +60,22 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
     // Build new relay proxy group
     let mut new_proxy_group = vec![];
 
+    let local_proxy_name = local
+        .proxies()
+        .get_vec()
+        .iter()
+        .map(|proxy| proxy.name().to_string())
+        .collect::<Vec<_>>();
+
     let relay_selector = ProxyGroup::new_select(
         DEFAULT_RELAY_SELECTOR_NAME.to_string(),
-        local
-            .proxies()
-            .get_vec()
-            .iter()
-            .map(|proxy| proxy.name().to_string())
-            .collect(),
+        local_proxy_name.clone(),
     )
     .insert_direct();
+
     let force_relay_selector = ProxyGroup::new_select(
         DEFAULT_FORCE_RELAY_SELECTOR_NAME.to_string(),
-        local
-            .proxies()
-            .get_vec()
-            .iter()
-            .map(|proxy| proxy.name().to_string())
-            .collect(),
+        local_proxy_name,
     );
 
     let relay_backend_selector = ProxyGroup::new_select(
@@ -106,8 +104,8 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
     ]);
 
     // Build new proxy group
-    let mut proxy_group_items = vec![base_relay.name().to_string()];
-    proxy_group_items.extend(proxy_group_str);
+    //let mut proxy_group_items = vec![base_relay.name().to_string()];
+    //proxy_group_items.extend(proxy_group_str);
 
     let real_proxy_group = remote
         .proxy_groups()
@@ -117,7 +115,7 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
             let mut ret = element.clone();
 
             if element.group_type().eq("select") && element.proxies().len() > 2 {
-                ret.set_proxies(proxy_group_items.clone())
+                ret.insert_to_head(base_relay.name().to_string());
             }
             ret
         })

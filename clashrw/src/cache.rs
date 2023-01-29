@@ -58,7 +58,7 @@ mod cache {
     use crate::parser::RemoteConfigure;
     use crate::DISABLE_CACHE;
     use anyhow::anyhow;
-    use log::error;
+    use log::{debug, error};
     use std::path::Path;
 
     pub const CACHE_FILE: &str = ".cache.yaml";
@@ -114,6 +114,7 @@ mod cache {
             if !DISABLE_CACHE.get().unwrap() {
                 if let Some(cache) = read_cache().await {
                     if url.eq(cache.url()) && cache.check_is_cached() {
+                        debug!("Cache: Read from cache");
                         return parse_remote_configure(cache.content());
                     }
                 }
