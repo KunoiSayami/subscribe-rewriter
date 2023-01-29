@@ -259,9 +259,59 @@ mod configure {
     }
 }
 
+mod file_cache {
+    use crate::cache::CACHE_TIME;
+    use serde_derive::{Deserialize, Serialize};
+    use tokio::io::AsyncWriteExt;
+
+    pub fn get_current_timestamp() -> u64 {
+        let start = std::time::SystemTime::now();
+        let since_the_epoch = start
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("Time went backwards");
+        since_the_epoch.as_secs()
+    }
+
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    pub struct FileCache {
+        timestamp: u64,
+        content: String,
+    }
+
+    impl FileCache {
+        pub fn content(&self) -> &str {
+            &self.content
+        }
+
+        pub fn new(content: String) -> Self {
+            Self {
+                timestamp: get_current_timestamp(),
+                content,
+            }
+        }
+
+        pub fn check_is_cached(&self) -> bool {
+            get_current_timestamp() - self.timestamp <= CACHE_TIME
+        }
+
+        pub async fn write_to_file(&self, path: &str) -> anyhow::Result<()> {
+            let mut file = tokio::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .create(true)
+                .open(path)
+                .await?;
+            file.write_all(serde_yaml::to_string(self)?.as_bytes())
+                .await?;
+            Ok(())
+        }
+    }
+}
+
 use serde_derive::{Deserialize, Serialize};
 
 pub use configure::Configure;
+pub use file_cache::FileCache;
 pub use keyword::Keyword;
 pub use proxies::{Proxies, Proxy};
 pub use proxy_groups::{ProxyGroup, ProxyGroups};

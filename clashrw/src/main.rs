@@ -1,5 +1,7 @@
+mod cache;
 mod parser;
 
+use crate::cache::read_or_fetch;
 use crate::parser::{Configure, ProxyGroup, RemoteConfigure};
 use anyhow::anyhow;
 use clap::{arg, command};
@@ -13,36 +15,10 @@ const DEFAULT_RELAY_SELECTOR_NAME: &str = "Relay selector";
 const DEFAULT_FORCE_RELAY_SELECTOR_NAME: &str = "Force relay selector";
 const DEFAULT_RELAY_BACKEND_SELECTOR_NAME: &str = "Relay backend selector";
 const DEFAULT_RELAY_NAME: &str = "Use Relay";
-const DEFAULT_FORCE_RELAY_NAME: &str = "Force Use Relay";
+const DEFAULT_FORCE_RELAY_NAME: &str = "Force use Relay";
+
 static OUTPUT_LOCATION: OnceCell<String> = OnceCell::new();
-
-async fn fetch_remote_file(url: &str) -> anyhow::Result<(RemoteConfigure, String)> {
-    let client = reqwest::ClientBuilder::new().build().unwrap();
-    let ret = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| anyhow!("Get error while fetch remote file: {:?}", e))?;
-
-    let txt = ret
-        .text()
-        .await
-        .map_err(|e| anyhow!("Get error while obtain text: {:?}", e))?;
-
-    let mut additional = txt
-        .split('\n')
-        .filter(|s| s.starts_with('#'))
-        .collect::<Vec<_>>()
-        .join("\n");
-    additional.push('\n');
-
-    let mut ret = serde_yaml::from_str::<RemoteConfigure>(txt.as_str())
-        .map_err(|e| anyhow!("Got error while decode remote file: {:?}", e))?;
-
-    ret.optimize();
-
-    Ok((ret, additional))
-}
+static DISABLE_CACHE: OnceCell<bool> = OnceCell::new();
 
 fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result<RemoteConfigure> {
     //let mut new_proxy_group_element = vec![];
@@ -219,7 +195,7 @@ async fn async_main(configure_file: String, output_file: Option<&String>) -> any
 
     debug!("Output to {}", OUTPUT_LOCATION.get().unwrap());
 
-    let (remote_file, additional_message) = fetch_remote_file(local_file.upstream()).await?;
+    let (remote_file, additional_message) = read_or_fetch(local_file.upstream()).await?;
     let result_configure = apply_change(remote_file, local_file)?;
     output(
         OUTPUT_LOCATION.get().unwrap(),
@@ -235,6 +211,7 @@ fn main() -> anyhow::Result<()> {
         .args(&[
             arg!(--config [configure_file] "Specify configure location"),
             arg!(--output [output_file] "Specify output location"),
+            arg!(--no-cache "Disable cache"),
         ])
         .get_matches();
 
@@ -242,6 +219,8 @@ fn main() -> anyhow::Result<()> {
         .filter_module("rustls", LevelFilter::Warn)
         .filter_module("reqwest", LevelFilter::Warn)
         .init();
+
+    DISABLE_CACHE.set(matches.get_flag("no-cache")).unwrap();
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
