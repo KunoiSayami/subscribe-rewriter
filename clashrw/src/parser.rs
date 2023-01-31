@@ -42,12 +42,16 @@ mod proxy_groups {
 
     use super::{Deserialize, Serialize};
 
-    #[derive(Clone, Debug, Deserialize, Serialize)]
+    #[derive(Clone, Debug, Default, Deserialize, Serialize)]
     pub struct ProxyGroup {
         name: String,
         #[serde(rename = "type")]
         type_: String,
         proxies: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        interval: Option<u64>,
     }
 
     impl ProxyGroup {
@@ -71,6 +75,7 @@ mod proxy_groups {
                 name,
                 type_: "relay".to_string(),
                 proxies: vec![first, second],
+                ..Default::default()
             }
         }
 
@@ -79,6 +84,17 @@ mod proxy_groups {
                 name,
                 type_: "select".to_string(),
                 proxies,
+                ..Default::default()
+            }
+        }
+
+        pub fn new_url_test(name: String, proxies: Vec<String>, url: String) -> Self {
+            Self {
+                name,
+                type_: "url-test".to_string(),
+                proxies,
+                url: Some(url),
+                interval: Some(600),
             }
         }
 
@@ -212,6 +228,7 @@ mod keyword {
     }
 
     impl Keyword {
+        #[allow(unused)]
         pub fn filter(&self) -> &Vec<String> {
             &self.filter
         }
@@ -221,14 +238,38 @@ mod keyword {
     }
 }
 
+/*mod test_url {
+    use super::{Deserialize, Serialize};
+
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    pub struct TestUrl {
+        proxy: String,
+        url: String,
+    }
+
+    impl TestUrl {
+        pub fn proxy(&self) -> &str {
+            &self.proxy
+        }
+        pub fn url(&self) -> &str {
+            &self.url
+        }
+    }
+}*/
+
 mod configure {
     use super::Deserialize;
     use super::{Keyword, Proxies, Rules};
+    //use std::collections::HashMap;
 
     use crate::DEFAULT_OUTPUT_LOCATION;
 
     fn set_default_output_location() -> String {
         DEFAULT_OUTPUT_LOCATION.to_string()
+    }
+
+    fn default_test_url() -> String {
+        "http://www.gstatic.com/generate_204".to_string()
     }
 
     #[derive(Clone, Debug, Deserialize)]
@@ -239,6 +280,8 @@ mod configure {
         keyword: Keyword,
         #[serde(default = "set_default_output_location")]
         output_location: String,
+        #[serde(default = "default_test_url")]
+        test_url: String,
     }
 
     impl Configure {
@@ -256,6 +299,18 @@ mod configure {
         }
         pub fn output_location(&self) -> &str {
             &self.output_location
+        }
+        /*pub fn get_url_maps(&self) -> HashMap<String, String> {
+            let mut m = HashMap::new();
+            if let Some(&test_urls) = self.test_urls {
+                for test_url in test_urls {
+                    m.insert(test_url.proxy().to_string(), test_url.url().to_string());
+                }
+            }
+            m
+        }*/
+        pub fn test_url(&self) -> String {
+            self.test_url.clone()
         }
     }
 }

@@ -16,14 +16,19 @@ const DEFAULT_FORCE_RELAY_SELECTOR_NAME: &str = "Force relay selector";
 const DEFAULT_RELAY_BACKEND_SELECTOR_NAME: &str = "Relay backend selector";
 const DEFAULT_RELAY_NAME: &str = "Use Relay";
 const DEFAULT_FORCE_RELAY_NAME: &str = "Force use Relay";
+const DEFAULT_CHOOSE_AUTO_PROFILE_NAME: &str = "Manual or Auto";
+const DEFAULT_URL_TEST_PROFILE_NAME: &str = "Auto select";
+const DEFAULT_URL_TEST_INTERVAL: u64 = 600;
 
 static OUTPUT_LOCATION: OnceCell<String> = OnceCell::new();
 static DISABLE_CACHE: OnceCell<bool> = OnceCell::new();
+static URL_TEST_INTERVAL: OnceCell<u64> = OnceCell::new();
 
 fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result<RemoteConfigure> {
     //let mut new_proxy_group_element = vec![];
 
-    let proxy_group_str = remote
+    // Filter interest proxy to relay
+    let interest_proxy = remote
         .proxy_groups()
         .get_vec()
         .iter()
@@ -34,20 +39,6 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
         .ok_or_else(|| anyhow!("Group is smaller then excepted."))?
         .proxies()
         .iter()
-        // Keyword filter
-        .filter(|x| {
-            !local
-                .keyword()
-                .filter()
-                .iter()
-                .any(|keyword| x.contains(keyword))
-        })
-        .map(|item| item.clone())
-        .collect::<Vec<_>>();
-
-    // Filter interest proxy to relay
-    let interest_proxy = proxy_group_str
-        .iter()
         .filter(|x| {
             local
                 .keyword()
@@ -55,6 +46,7 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
                 .iter()
                 .any(|keyword| x.contains(keyword))
         })
+        .map(|item| item.clone())
         .collect::<Vec<_>>();
 
     // Build new relay proxy group
@@ -83,22 +75,38 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
         interest_proxy.iter().map(|x| x.to_string()).collect(),
     );
 
+    let url_test_proxies = ProxyGroup::new_url_test(
+        DEFAULT_URL_TEST_PROFILE_NAME.to_string(),
+        interest_proxy,
+        local.test_url(),
+    );
+
+    let manual_or_auto_selector = ProxyGroup::new_select(
+        DEFAULT_CHOOSE_AUTO_PROFILE_NAME.to_string(),
+        vec![
+            DEFAULT_URL_TEST_PROFILE_NAME.to_string(),
+            DEFAULT_RELAY_BACKEND_SELECTOR_NAME.to_string(),
+        ],
+    );
+
     let base_relay = ProxyGroup::new_relay(
         DEFAULT_RELAY_NAME.to_string(),
         DEFAULT_RELAY_BACKEND_SELECTOR_NAME.to_string(),
-        DEFAULT_RELAY_SELECTOR_NAME.to_string(),
+        DEFAULT_CHOOSE_AUTO_PROFILE_NAME.to_string(),
     );
 
     let base_force_relay = ProxyGroup::new_relay(
         DEFAULT_FORCE_RELAY_NAME.to_string(),
         DEFAULT_RELAY_BACKEND_SELECTOR_NAME.to_string(),
-        DEFAULT_FORCE_RELAY_SELECTOR_NAME.to_string(),
+        DEFAULT_CHOOSE_AUTO_PROFILE_NAME.to_string(),
     );
 
     new_proxy_group.extend(vec![
-        relay_selector,
         force_relay_selector,
+        url_test_proxies,
+        relay_selector,
         relay_backend_selector,
+        manual_or_auto_selector,
         base_relay.clone(),
         base_force_relay.clone(),
     ]);
@@ -199,8 +207,9 @@ fn main() -> anyhow::Result<()> {
     let matches = command!()
         .args(&[
             arg!(--nocache "Disable cache"),
-            arg!(--config [configure_file] "Specify configure location"),
-            arg!(--output [output_file] "Specify output location"),
+            arg!(--config [configure_file] "Specify configure location (Default: ./config.yaml)"),
+            arg!(--output [output_file] "Specify output location (Default: ./output.yaml)"),
+            arg!(--interval [url_test_interval] "Specify url test interval (Default: 600)"),
         ])
         .get_matches();
 
@@ -210,6 +219,13 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     DISABLE_CACHE.set(matches.get_flag("nocache")).unwrap();
+    URL_TEST_INTERVAL
+        .set(
+            *matches
+                .get_one("interval")
+                .unwrap_or(&DEFAULT_URL_TEST_INTERVAL),
+        )
+        .unwrap();
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
