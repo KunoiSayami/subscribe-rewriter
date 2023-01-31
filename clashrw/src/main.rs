@@ -84,8 +84,8 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
     let manual_or_auto_selector = ProxyGroup::new_select(
         DEFAULT_CHOOSE_AUTO_PROFILE_NAME.to_string(),
         vec![
-            DEFAULT_URL_TEST_PROFILE_NAME.to_string(),
             DEFAULT_RELAY_BACKEND_SELECTOR_NAME.to_string(),
+            DEFAULT_URL_TEST_PROFILE_NAME.to_string(),
         ],
     );
 
