@@ -257,31 +257,88 @@ mod keyword {
     }
 }*/
 
-mod configure {
+mod http_configure {
+
     use super::Deserialize;
-    use super::{Keyword, Proxies, Rules};
     //use std::collections::HashMap;
 
-    use crate::DEFAULT_OUTPUT_LOCATION;
+    const DEFAULT_REDIS_SERVER: &str = "redis://127.0.0.1/";
 
-    fn set_default_output_location() -> String {
-        DEFAULT_OUTPUT_LOCATION.to_string()
+    fn get_default_redis_server() -> String {
+        DEFAULT_REDIS_SERVER.to_string()
     }
 
-    fn default_test_url() -> String {
+    #[derive(Clone, Debug, Deserialize)]
+    pub struct HttpServerConfigure {
+        address: String,
+        port: u16,
+        #[serde(default = "get_default_redis_server")]
+        redis_address: String,
+    }
+
+    impl HttpServerConfigure {
+        pub fn address(&self) -> &str {
+            &self.address
+        }
+        pub fn port(&self) -> u16 {
+            self.port
+        }
+        pub fn redis_address(&self) -> &str {
+            &self.redis_address
+        }
+    }
+
+    impl Default for HttpServerConfigure {
+        fn default() -> Self {
+            Self {
+                address: "127.0.0.1".to_string(),
+                port: 23365,
+                redis_address: DEFAULT_REDIS_SERVER.to_string(),
+            }
+        }
+    }
+}
+
+mod upstream {
+
+    use super::Deserialize;
+    //use std::collections::HashMap;
+
+    #[derive(Clone, Debug, Deserialize)]
+    pub struct UpStream {
+        sub_id: String,
+        upstream: String,
+    }
+
+    impl UpStream {
+        pub fn sub_id(&self) -> &str {
+            &self.sub_id
+        }
+        pub fn upstream(&self) -> &str {
+            &self.upstream
+        }
+    }
+}
+
+mod configure {
+    use super::Deserialize;
+    use super::{HttpServerConfigure, Keyword, Proxies, Rules, UpStream};
+    //use std::collections::HashMap;
+
+    pub fn default_test_url() -> String {
         "http://www.gstatic.com/generate_204".to_string()
     }
 
     #[derive(Clone, Debug, Deserialize)]
     pub struct Configure {
-        upstream: String,
+        upstream: Vec<UpStream>,
         rules: Rules,
         proxies: Proxies,
         keyword: Keyword,
-        #[serde(default = "set_default_output_location")]
-        output_location: String,
         #[serde(default = "default_test_url")]
         test_url: String,
+        #[serde(default)]
+        http: HttpServerConfigure,
     }
 
     impl Configure {
@@ -293,12 +350,6 @@ mod configure {
         }
         pub fn keyword(&self) -> &Keyword {
             &self.keyword
-        }
-        pub fn upstream(&self) -> &str {
-            &self.upstream
-        }
-        pub fn output_location(&self) -> &str {
-            &self.output_location
         }
         /*pub fn get_url_maps(&self) -> HashMap<String, String> {
             let mut m = HashMap::new();
@@ -312,14 +363,77 @@ mod configure {
         pub fn test_url(&self) -> String {
             self.test_url.clone()
         }
+        pub fn upstream(&self) -> &Vec<UpStream> {
+            &self.upstream
+        }
+        pub fn http(&self) -> &HttpServerConfigure {
+            &self.http
+        }
+    }
+}
+
+mod share_config {
+    use super::{Keyword, Proxies, Rules};
+    use crate::parser::Configure;
+    use log::debug;
+    use std::collections::HashMap;
+
+    pub struct ShareConfig {
+        redis_client: redis::Client,
+        upstream: HashMap<String, String>,
+        rules: Rules,
+        proxies: Proxies,
+        keyword: Keyword,
+        test_url: String,
+    }
+
+    impl ShareConfig {
+        pub async fn get_redis_connection(&self) -> anyhow::Result<redis::aio::Connection> {
+            Ok(self.redis_client.get_async_connection().await?)
+        }
+        pub fn search_url(&self, key: &String) -> Option<&String> {
+            self.upstream.get(key)
+        }
+        pub fn new(local_configure: Configure, redis_client: redis::Client) -> Self {
+            Self {
+                upstream: {
+                    let mut m = HashMap::new();
+                    for map in local_configure.upstream() {
+                        m.insert(map.sub_id().to_string(), map.upstream().to_string());
+                    }
+                    debug!("Find {} subscriptions", m.len());
+                    m
+                },
+                rules: local_configure.rules().clone(),
+                proxies: local_configure.proxies().clone(),
+                keyword: local_configure.keyword().clone(),
+                redis_client,
+                test_url: local_configure.test_url(),
+            }
+        }
+        pub fn rules(&self) -> &Rules {
+            &self.rules
+        }
+        pub fn proxies(&self) -> &Proxies {
+            &self.proxies
+        }
+        pub fn keyword(&self) -> &Keyword {
+            &self.keyword
+        }
+        pub fn test_url(&self) -> String {
+            self.test_url.clone()
+        }
     }
 }
 
 use serde_derive::{Deserialize, Serialize};
 
-pub use configure::Configure;
+pub use configure::{default_test_url, Configure};
+pub use http_configure::HttpServerConfigure;
 pub use keyword::Keyword;
 pub use proxies::{Proxies, Proxy};
 pub use proxy_groups::{ProxyGroup, ProxyGroups};
 pub use remote_configure::RemoteConfigure;
 pub use rules::Rules;
+pub use share_config::ShareConfig;
+pub use upstream::UpStream;

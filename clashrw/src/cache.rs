@@ -1,20 +1,12 @@
 mod file_cache {
     use crate::cache::CACHE_TIME;
+    use log::error;
+    use redis::AsyncCommands;
     use serde_derive::{Deserialize, Serialize};
-    use tokio::io::AsyncWriteExt;
-
-    pub fn get_current_timestamp() -> u64 {
-        let start = std::time::SystemTime::now();
-        let since_the_epoch = start
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("Time went backwards");
-        since_the_epoch.as_secs()
-    }
 
     #[derive(Clone, Debug, Deserialize, Serialize)]
     pub struct FileCache {
-        timestamp: u64,
-        url: String,
+        remote_status: String,
         content: String,
     }
 
@@ -23,32 +15,30 @@ mod file_cache {
             &self.content
         }
 
-        pub fn new(url: String, content: String) -> Self {
+        pub fn new(content: (String, String)) -> Self {
             Self {
-                timestamp: get_current_timestamp(),
-                url,
-                content,
+                remote_status: content.1,
+                content: content.0,
             }
         }
 
-        pub fn check_is_cached(&self) -> bool {
-            get_current_timestamp() - self.timestamp <= CACHE_TIME
+        pub async fn write_to_redis(
+            &self,
+            redis_key: String,
+            mut redis_conn: redis::aio::Connection,
+        ) {
+            if let Ok(s) = serde_yaml::to_string(self)
+                .map_err(|e| error!("[Can be safely ignored] Serialize cache error: {:?}", e))
+            {
+                redis_conn
+                    .set_ex::<_, String, i64>(&redis_key, s, CACHE_TIME)
+                    .await
+                    .map_err(|e| error!("[Can be safely ignored] Write to redis error: {:?}", e))
+                    .ok();
+            }
         }
-
-        pub async fn write_to_file(&self, path: &str) -> anyhow::Result<()> {
-            let mut file = tokio::fs::OpenOptions::new()
-                .write(true)
-                .truncate(true)
-                .create(true)
-                .open(path)
-                .await?;
-            file.write_all(serde_yaml::to_string(self)?.as_bytes())
-                .await?;
-            Ok(())
-        }
-
-        pub fn url(&self) -> &str {
-            &self.url
+        pub fn remote_status(&self) -> String {
+            self.remote_status.clone()
         }
     }
 }
@@ -59,12 +49,11 @@ mod cache {
     use crate::DISABLE_CACHE;
     use anyhow::anyhow;
     use log::{debug, error};
-    use std::path::Path;
+    use redis::AsyncCommands;
 
-    pub const CACHE_FILE: &str = ".cache.yaml";
-    pub const CACHE_TIME: u64 = 600;
+    pub const CACHE_TIME: usize = 600;
 
-    async fn fetch_remote_file(url: &str) -> anyhow::Result<String> {
+    async fn fetch_remote_file(url: &str) -> anyhow::Result<(String, String)> {
         let client = reqwest::ClientBuilder::new().build().unwrap();
         let ret = client
             .get(url)
@@ -72,34 +61,33 @@ mod cache {
             .await
             .map_err(|e| anyhow!("Get error while fetch remote file: {:?}", e))?;
 
+        let header = ret
+            .headers()
+            .get("subscription-userinfo")
+            .map(|v| v.to_str().unwrap_or_default().to_string())
+            .unwrap_or_else(|| String::new());
         let txt = ret
             .text()
             .await
             .map_err(|e| anyhow!("Get error while obtain text: {:?}", e))?;
 
-        Ok(txt)
+        Ok((txt, header))
     }
 
-    fn parse_remote_configure(txt: &str) -> anyhow::Result<RemoteConfigure> {
+    fn parse_remote_configure(
+        txt: &str,
+        remote_status: String,
+    ) -> anyhow::Result<(RemoteConfigure, String)> {
         let mut ret = serde_yaml::from_str::<RemoteConfigure>(txt)
             .map_err(|e| anyhow!("Got error while decode remote file: {:?}", e))?;
 
         ret.optimize();
 
-        Ok(ret)
+        Ok((ret, remote_status))
     }
 
-    async fn read_cache() -> Option<FileCache> {
-        let content = tokio::fs::read_to_string(CACHE_FILE)
-            .await
-            .map_err(|e| {
-                error!(
-                    "[Can be safely ignored] Got error while read cache: {:?}",
-                    e
-                )
-            })
-            .ok()?;
-        serde_yaml::from_str(content.as_str())
+    fn read_cache(content: Result<Option<String>, ()>) -> Option<FileCache> {
+        serde_yaml::from_str(content.ok()??.as_str())
             .map_err(|e| {
                 error!(
                     "[Can be safely ignored] Got error while serialize cache yaml: {:?}",
@@ -109,32 +97,49 @@ mod cache {
             .ok()
     }
 
-    pub async fn read_or_fetch(url: &str) -> anyhow::Result<RemoteConfigure> {
-        if Path::new(CACHE_FILE).exists() {
+    pub async fn read_or_fetch(
+        url: &str,
+        redis_key: String,
+        mut redis_conn: anyhow::Result<redis::aio::Connection>,
+    ) -> anyhow::Result<(RemoteConfigure, String)> {
+        if let Ok(ref mut redis_conn) = redis_conn {
             if !DISABLE_CACHE.get().unwrap() {
-                if let Some(cache) = read_cache().await {
-                    if url.eq(cache.url()) && cache.check_is_cached() {
-                        debug!("Cache: Read from cache");
-                        return parse_remote_configure(cache.content());
+                let ret = redis_conn.exists(&redis_key).await.map_err(|e| {
+                    error!(
+                        "[Can be safely ignored] Got error in query key {:?}: {:?}",
+                        redis_key, e
+                    )
+                });
+                if let Ok(ret) = ret {
+                    if ret {
+                        let cache = redis_conn
+                            .get::<_, Option<String>>(&redis_key)
+                            .await
+                            .map_err(|e| {
+                                error!(
+                                    "[Can be safely ignored] Got error in fetch key {:?}: {:?}",
+                                    redis_key, e
+                                )
+                            });
+                        if let Some(cache) = read_cache(cache) {
+                            debug!("Cache: Read from cache");
+                            return parse_remote_configure(cache.content(), cache.remote_status());
+                        }
                     }
                 }
             }
         }
 
         let cache = FileCache::new(
-            url.to_string(),
             fetch_remote_file(url)
                 .await
                 .map_err(|e| anyhow!("Get error while fetch remote file: {:?}", e))?,
         );
 
-        cache
-            .write_to_file(CACHE_FILE)
-            .await
-            .map_err(|e| error!("[Can be safely ignored] Write cache fail: {:?}", e))
-            .ok();
-
-        parse_remote_configure(cache.content())
+        if let Ok(redis_conn) = redis_conn {
+            cache.write_to_redis(redis_key, redis_conn).await;
+        }
+        parse_remote_configure(cache.content(), cache.remote_status())
     }
 }
 

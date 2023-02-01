@@ -1,16 +1,20 @@
 mod cache;
 mod parser;
+mod web;
 
-use crate::cache::read_or_fetch;
-use crate::parser::{Configure, ProxyGroup, RemoteConfigure};
+use crate::parser::{default_test_url, Configure, ProxyGroup, RemoteConfigure, ShareConfig};
+use crate::web::get;
 use anyhow::anyhow;
+use axum::{Json, Router};
 use clap::{arg, command};
-use log::{debug, LevelFilter};
+use log::{info, warn, LevelFilter};
 use once_cell::sync::OnceCell;
-use tokio::io::AsyncWriteExt;
+use serde_json::json;
+use std::sync::Arc;
+use tower::ServiceBuilder;
+use tower_http::trace::TraceLayer;
 
 const DEFAULT_CONFIG_LOCATION: &str = "config.yaml";
-const DEFAULT_OUTPUT_LOCATION: &str = "output.yaml";
 const DEFAULT_RELAY_SELECTOR_NAME: &str = "Relay selector";
 const DEFAULT_FORCE_RELAY_SELECTOR_NAME: &str = "Force relay selector";
 const DEFAULT_RELAY_BACKEND_SELECTOR_NAME: &str = "Relay backend selector";
@@ -18,13 +22,16 @@ const DEFAULT_RELAY_NAME: &str = "Use Relay";
 const DEFAULT_FORCE_RELAY_NAME: &str = "Force use Relay";
 const DEFAULT_CHOOSE_AUTO_PROFILE_NAME: &str = "Manual or Auto";
 const DEFAULT_URL_TEST_PROFILE_NAME: &str = "Auto select";
+const DEFAULT_RELAY_URL_TEST_PROFILE_NAME: &str = "Relay auto select";
 const DEFAULT_URL_TEST_INTERVAL: u64 = 600;
 
-static OUTPUT_LOCATION: OnceCell<String> = OnceCell::new();
 static DISABLE_CACHE: OnceCell<bool> = OnceCell::new();
 static URL_TEST_INTERVAL: OnceCell<u64> = OnceCell::new();
 
-fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result<RemoteConfigure> {
+fn apply_change(
+    mut remote: RemoteConfigure,
+    local: Arc<ShareConfig>,
+) -> anyhow::Result<RemoteConfigure> {
     //let mut new_proxy_group_element = vec![];
 
     // Filter interest proxy to relay
@@ -77,6 +84,12 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
 
     let url_test_proxies = ProxyGroup::new_url_test(
         DEFAULT_URL_TEST_PROFILE_NAME.to_string(),
+        interest_proxy.clone(),
+        default_test_url(),
+    );
+
+    let relay_url_test_proxies = ProxyGroup::new_url_test(
+        DEFAULT_RELAY_URL_TEST_PROFILE_NAME.to_string(),
         interest_proxy,
         local.test_url(),
     );
@@ -85,7 +98,7 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
         DEFAULT_CHOOSE_AUTO_PROFILE_NAME.to_string(),
         vec![
             DEFAULT_RELAY_BACKEND_SELECTOR_NAME.to_string(),
-            DEFAULT_URL_TEST_PROFILE_NAME.to_string(),
+            DEFAULT_RELAY_URL_TEST_PROFILE_NAME.to_string(),
         ],
     );
 
@@ -104,6 +117,7 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
     new_proxy_group.extend(vec![
         force_relay_selector,
         url_test_proxies,
+        relay_url_test_proxies,
         relay_selector,
         relay_backend_selector,
         manual_or_auto_selector,
@@ -123,6 +137,7 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
             let mut ret = element.clone();
 
             if element.group_type().eq("select") && element.proxies().len() > 2 {
+                ret.insert_to_head(DEFAULT_URL_TEST_PROFILE_NAME.to_string());
                 ret.insert_to_head(base_relay.name().to_string());
             }
             ret
@@ -155,30 +170,7 @@ fn apply_change(mut remote: RemoteConfigure, local: Configure) -> anyhow::Result
     Ok(remote)
 }
 
-async fn output(path: &String, configure_file: RemoteConfigure) -> anyhow::Result<()> {
-    let s = serde_yaml::to_string(&configure_file)
-        .map_err(|e| anyhow!("Got error while output configure file, {:?}", e))?;
-
-    if path.eq("-") {
-        println!("{}", s);
-        return Ok(());
-    }
-
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(path)
-        .await
-        .map_err(|e| anyhow!("Got error while open file: {:?}", e))?;
-    file.write_all(s.as_bytes())
-        .await
-        .map_err(|e| anyhow!("Got error while write file: {:?}", e))?;
-
-    Ok(())
-}
-
-async fn async_main(configure_file: String, output_file: Option<&String>) -> anyhow::Result<()> {
+async fn async_main(configure_file: String) -> anyhow::Result<()> {
     let local_file: Configure = serde_yaml::from_str(
         tokio::fs::read_to_string(configure_file)
             .await
@@ -187,19 +179,51 @@ async fn async_main(configure_file: String, output_file: Option<&String>) -> any
     )
     .map_err(|e| anyhow!("Got error while parse local configure: {:?}", e))?;
 
-    OUTPUT_LOCATION
-        .set(if let Some(output_location) = output_file {
-            output_location.clone()
-        } else {
-            local_file.output_location().to_string()
-        })
-        .unwrap();
+    let redis_conn = redis::Client::open(local_file.http().redis_address())?;
+    let bind = format!(
+        "{}:{}",
+        local_file.http().address(),
+        local_file.http().port()
+    );
+    let arc_configure = Arc::new(ShareConfig::new(local_file, redis_conn));
 
-    debug!("Output to {}", OUTPUT_LOCATION.get().unwrap());
+    let router = Router::new()
+        .route(
+            "/sub/:sub_id",
+            axum::routing::get({
+                let share_configure = arc_configure.clone();
+                move |sub_id| get(sub_id, share_configure)
+            }),
+        )
+        .route(
+            "/",
+            axum::routing::get(|| async {
+                Json(json!({ "version": env!("CARGO_PKG_VERSION"), "status": 200 }))
+            }),
+        )
+        .layer(ServiceBuilder::new().layer(TraceLayer::new_for_http()));
 
-    let remote_file = read_or_fetch(local_file.upstream()).await?;
-    let result_configure = apply_change(remote_file, local_file)?;
-    output(OUTPUT_LOCATION.get().unwrap(), result_configure).await?;
+    let server_handler = axum_server::Handle::new();
+    let server = tokio::spawn(
+        axum_server::bind(bind.parse().unwrap())
+            .handle(server_handler.clone())
+            .serve(router.into_make_service()),
+    );
+
+    tokio::select! {
+        _ = async {
+            tokio::signal::ctrl_c().await.unwrap();
+            info!("Recv Control-C send graceful shutdown command.");
+            server_handler.graceful_shutdown(None);
+            tokio::signal::ctrl_c().await.unwrap();
+            warn!("Force to exit!");
+            std::process::exit(137)
+        } => {
+        },
+        _ = server => {
+        }
+    }
+
     Ok(())
 }
 
@@ -208,7 +232,6 @@ fn main() -> anyhow::Result<()> {
         .args(&[
             arg!(--nocache "Disable cache"),
             arg!(--config [configure_file] "Specify configure location (Default: ./config.yaml)"),
-            arg!(--output [output_file] "Specify output location (Default: ./output.yaml)"),
             arg!(--interval [url_test_interval] "Specify url test interval (Default: 600)"),
         ])
         .get_matches();
@@ -236,6 +259,5 @@ fn main() -> anyhow::Result<()> {
                 .get_one("config")
                 .map(|s: &String| s.to_string())
                 .unwrap_or_else(|| DEFAULT_CONFIG_LOCATION.to_string()),
-            matches.get_one::<String>("output"),
         ))
 }
