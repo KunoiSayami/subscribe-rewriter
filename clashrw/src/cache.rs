@@ -46,15 +46,20 @@ mod file_cache {
 mod cache {
     use super::FileCache;
     use crate::parser::RemoteConfigure;
+    use crate::web::ErrorCode;
     use crate::DISABLE_CACHE;
     use anyhow::anyhow;
     use log::{debug, error};
     use redis::AsyncCommands;
+    use std::time::Duration;
 
     pub const CACHE_TIME: usize = 600;
 
     async fn fetch_remote_file(url: &str) -> anyhow::Result<(String, String)> {
-        let client = reqwest::ClientBuilder::new().build().unwrap();
+        let client = reqwest::ClientBuilder::new()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
         let ret = client
             .get(url)
             .send()
@@ -77,9 +82,11 @@ mod cache {
     fn parse_remote_configure(
         txt: &str,
         remote_status: String,
-    ) -> anyhow::Result<(RemoteConfigure, String)> {
-        let mut ret = serde_yaml::from_str::<RemoteConfigure>(txt)
-            .map_err(|e| anyhow!("Got error while decode remote file: {:?}", e))?;
+    ) -> Result<(RemoteConfigure, String), ErrorCode> {
+        let mut ret = serde_yaml::from_str::<RemoteConfigure>(txt).map_err(|e| {
+            error!("Got error while decode remote file: {:?}", e);
+            ErrorCode::NotAcceptable
+        })?;
 
         ret.optimize();
 
@@ -101,7 +108,7 @@ mod cache {
         url: &str,
         redis_key: String,
         mut redis_conn: anyhow::Result<redis::aio::Connection>,
-    ) -> anyhow::Result<(RemoteConfigure, String)> {
+    ) -> Result<(RemoteConfigure, String), ErrorCode> {
         if let Ok(ref mut redis_conn) = redis_conn {
             if !DISABLE_CACHE.get().unwrap() {
                 let ret = redis_conn.exists(&redis_key).await.map_err(|e| {
@@ -130,11 +137,10 @@ mod cache {
             }
         }
 
-        let cache = FileCache::new(
-            fetch_remote_file(url)
-                .await
-                .map_err(|e| anyhow!("Get error while fetch remote file: {:?}", e))?,
-        );
+        let cache = FileCache::new(fetch_remote_file(url).await.map_err(|e| {
+            error!("Get error while fetch remote file: {:?}", e);
+            ErrorCode::RequestTimeout
+        })?);
 
         if let Ok(redis_conn) = redis_conn {
             cache.write_to_redis(redis_key, redis_conn).await;

@@ -9,9 +9,11 @@ pub mod v1 {
     use log::error;
     use std::sync::Arc;
 
-    enum ErrorCode {
+    pub enum ErrorCode {
         Forbidden,
         InternalServerError,
+        RequestTimeout,
+        NotAcceptable,
     }
 
     impl From<()> for ErrorCode {
@@ -20,22 +22,31 @@ pub mod v1 {
         }
     }
 
-    impl From<anyhow::Error> for ErrorCode {
+    impl From<Error> for ErrorCode {
         fn from(_value: Error) -> Self {
             Self::from(())
         }
     }
 
+    fn build_body(code: u16, msg: &str) -> Response<String> {
+        let builder = Response::builder().status(code);
+        builder.body(msg.to_string()).unwrap()
+    }
+
     fn forbidden() -> Response<String> {
-        let builder = Response::builder().status(403);
-        builder.body("403 forbidden".to_string()).unwrap()
+        build_body(403, "403 forbidden")
     }
 
     fn internal_server_error() -> Response<String> {
-        let builder = Response::builder().status(500);
-        builder
-            .body("500 internal server error".to_string())
-            .unwrap()
+        build_body(500, "500 internal server error")
+    }
+
+    fn request_timeout() -> Response<String> {
+        build_body(408, "408 Request Timeout")
+    }
+
+    fn not_acceptable() -> Response<String> {
+        build_body(406, "406 Not Acceptable")
     }
 
     async fn sub_process(
@@ -71,10 +82,13 @@ pub mod v1 {
             Err(code) => match code {
                 ErrorCode::Forbidden => forbidden(),
                 ErrorCode::InternalServerError => internal_server_error(),
+                ErrorCode::NotAcceptable => not_acceptable(),
+                ErrorCode::RequestTimeout => request_timeout(),
             },
         }
     }
 }
 
 pub use current::get;
+pub use current::ErrorCode;
 pub use v1 as current;

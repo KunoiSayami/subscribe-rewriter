@@ -239,6 +239,7 @@ fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_default_env()
         .filter_module("rustls", LevelFilter::Warn)
         .filter_module("reqwest", LevelFilter::Warn)
+        .filter_module("h2", LevelFilter::Warn)
         .init();
 
     DISABLE_CACHE.set(matches.get_flag("nocache")).unwrap();
