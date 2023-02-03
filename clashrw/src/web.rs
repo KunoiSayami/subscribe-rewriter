@@ -68,6 +68,10 @@ pub mod v1 {
         } else {
             Response::builder().header("subscription-userinfo", remote_status)
         }
+        .header(
+            "content-disposition",
+            format!("attachment; filename=Clash_{}.yaml", sub_id),
+        )
         .body(ret)
         .unwrap();
         Ok(response)
