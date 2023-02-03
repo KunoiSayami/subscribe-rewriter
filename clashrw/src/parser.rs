@@ -144,7 +144,7 @@ mod rules {
 
     impl Rules {
         pub fn insert_head(&mut self, mut from: Vec<String>) -> &mut Self {
-            from.extend(self.0.iter().map(|s| s.clone()));
+            from.extend(self.0.iter().cloned());
             self.0 = from;
             self
         }
@@ -205,7 +205,7 @@ mod remote_configure {
             for element in &mut self.proxy_groups.0 {
                 for item in &v {
                     let ret = element.proxies().iter().position(|x| x.eq(item));
-                    if let None = ret {
+                    if ret.is_none() {
                         //warn!("Not found: {:?}", item);
                         continue;
                     }

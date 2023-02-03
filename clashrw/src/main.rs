@@ -10,6 +10,7 @@ use clap::{arg, command};
 use log::{info, warn, LevelFilter};
 use once_cell::sync::OnceCell;
 use serde_json::json;
+use std::io::Write;
 use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
@@ -40,8 +41,7 @@ fn apply_change(
         .get_vec()
         .iter()
         // Get first proxies length > 2
-        .filter(|x| x.proxies().len() > 2)
-        .next()
+        .find(|x| x.proxies().len() > 2)
         // Make Option to Result
         .ok_or_else(|| anyhow!("Group is smaller then excepted."))?
         .proxies()
@@ -53,7 +53,7 @@ fn apply_change(
                 .iter()
                 .any(|keyword| x.contains(keyword))
         })
-        .map(|item| item.clone())
+        .cloned()
         .collect::<Vec<_>>();
 
     // Build new relay proxy group
@@ -122,7 +122,7 @@ fn apply_change(
         relay_backend_selector,
         manual_or_auto_selector,
         base_relay.clone(),
-        base_force_relay.clone(),
+        base_force_relay,
     ]);
 
     // Build new proxy group
@@ -157,15 +157,12 @@ fn apply_change(
             .iter()
             // TODO: Should reserve empty configure
             .filter(|x| !x.password().is_empty())
-            .map(|x| x.clone())
-            .collect::<Vec<_>>(),
+            .cloned(),
     );
 
     remote.mut_proxies().set_vec(new_proxy_pending);
 
-    remote
-        .mut_rules()
-        .insert_head(local.rules().get_element().clone());
+    remote.mut_rules().insert_head(local.rules().get_element());
 
     Ok(remote)
 }
@@ -233,14 +230,19 @@ fn main() -> anyhow::Result<()> {
             arg!(--nocache "Disable cache"),
             arg!(--config [configure_file] "Specify configure location (Default: ./config.yaml)"),
             arg!(--interval [url_test_interval] "Specify url test interval (Default: 600)"),
+            arg!(--systemd "Disable log output in systemd"),
         ])
         .get_matches();
 
-    env_logger::Builder::from_default_env()
+    let mut binding = env_logger::Builder::from_default_env();
+    binding
         .filter_module("rustls", LevelFilter::Warn)
         .filter_module("reqwest", LevelFilter::Warn)
-        .filter_module("h2", LevelFilter::Warn)
-        .init();
+        .filter_module("h2", LevelFilter::Warn);
+    if matches.get_flag("systemd") {
+        binding.format(|buf, record| writeln!(buf, "[{}] - {}", record.level(), record.args()));
+    }
+    binding.init();
 
     DISABLE_CACHE.set(matches.get_flag("nocache")).unwrap();
     URL_TEST_INTERVAL

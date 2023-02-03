@@ -28,7 +28,7 @@ mod file_cache {
             mut redis_conn: redis::aio::Connection,
         ) {
             if let Ok(s) = serde_yaml::to_string(self)
-                .map_err(|e| error!("[Can be safely ignored] Serialize cache error: {:?}", e))
+                .map_err(|e| error!("[Can be safely ignored] Serialize cache_ error: {:?}", e))
             {
                 redis_conn
                     .set_ex::<_, String, i64>(&redis_key, s, CACHE_TIME)
@@ -43,7 +43,7 @@ mod file_cache {
     }
 }
 
-mod cache {
+mod cache_ {
     use super::FileCache;
     use crate::parser::RemoteConfigure;
     use crate::web::ErrorCode;
@@ -71,7 +71,7 @@ mod cache {
             .headers()
             .get("subscription-userinfo")
             .map(|v| v.to_str().unwrap_or_default().to_string())
-            .unwrap_or_else(|| String::new());
+            .unwrap_or_else(String::new);
         let txt = ret
             .text()
             .await
@@ -98,7 +98,7 @@ mod cache {
         serde_yaml::from_str(content.ok()??.as_str())
             .map_err(|e| {
                 warn!(
-                    "[Can be safely ignored] Got error while serialize cache yaml: {:?}",
+                    "[Can be safely ignored] Got error while serialize cache_ yaml: {:?}",
                     e
                 )
             })
@@ -130,7 +130,7 @@ mod cache {
                                 )
                             });
                         if let Some(cache) = read_cache(cache) {
-                            debug!("Cache: Read from cache");
+                            debug!("Cache: Read from cache_");
                             return parse_remote_configure(cache.content(), cache.remote_status());
                         }
                     }
@@ -155,5 +155,5 @@ mod cache {
     }
 }
 
-pub use cache::{read_or_fetch, CACHE_TIME};
+pub use cache_::{read_or_fetch, CACHE_TIME};
 pub use file_cache::FileCache;
