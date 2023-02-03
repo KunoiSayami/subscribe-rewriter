@@ -49,7 +49,7 @@ mod cache {
     use crate::web::ErrorCode;
     use crate::DISABLE_CACHE;
     use anyhow::anyhow;
-    use log::{debug, error};
+    use log::{debug, error, warn};
     use redis::AsyncCommands;
     use std::time::Duration;
 
@@ -60,6 +60,7 @@ mod cache {
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap();
+
         let ret = client
             .get(url)
             .send()
@@ -96,7 +97,7 @@ mod cache {
     fn read_cache(content: Result<Option<String>, ()>) -> Option<FileCache> {
         serde_yaml::from_str(content.ok()??.as_str())
             .map_err(|e| {
-                error!(
+                warn!(
                     "[Can be safely ignored] Got error while serialize cache yaml: {:?}",
                     e
                 )
@@ -112,7 +113,7 @@ mod cache {
         if let Ok(ref mut redis_conn) = redis_conn {
             if !DISABLE_CACHE.get().unwrap() {
                 let ret = redis_conn.exists(&redis_key).await.map_err(|e| {
-                    error!(
+                    warn!(
                         "[Can be safely ignored] Got error in query key {:?}: {:?}",
                         redis_key, e
                     )
@@ -123,7 +124,7 @@ mod cache {
                             .get::<_, Option<String>>(&redis_key)
                             .await
                             .map_err(|e| {
-                                error!(
+                                warn!(
                                     "[Can be safely ignored] Got error in fetch key {:?}: {:?}",
                                     redis_key, e
                                 )
@@ -135,6 +136,11 @@ mod cache {
                     }
                 }
             }
+        } else if let Err(ref e) = redis_conn {
+            warn!(
+                "[Can be safely ignored] can't get redis connection: {:?}",
+                e
+            );
         }
 
         let cache = FileCache::new(fetch_remote_file(url).await.map_err(|e| {
