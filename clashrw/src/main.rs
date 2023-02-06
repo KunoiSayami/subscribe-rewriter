@@ -5,6 +5,7 @@ mod web;
 use crate::parser::{default_test_url, Configure, ProxyGroup, RemoteConfigure, ShareConfig};
 use crate::web::get;
 use anyhow::anyhow;
+use axum::http::StatusCode;
 use axum::{Json, Router};
 use clap::{arg, command};
 use log::{info, warn, LevelFilter};
@@ -21,13 +22,16 @@ const DEFAULT_FORCE_RELAY_SELECTOR_NAME: &str = "Force relay selector";
 const DEFAULT_RELAY_BACKEND_SELECTOR_NAME: &str = "Relay backend selector";
 const DEFAULT_RELAY_NAME: &str = "Use Relay";
 const DEFAULT_FORCE_RELAY_NAME: &str = "Force use Relay";
+const DEFAULT_BACKEND_AUTO_OR_MANUAL_SELECTOR_NAME: &str = "Backend Manual or Auto";
 const DEFAULT_CHOOSE_AUTO_PROFILE_NAME: &str = "Manual or Auto";
 const DEFAULT_URL_TEST_PROFILE_NAME: &str = "Auto select";
 const DEFAULT_RELAY_URL_TEST_PROFILE_NAME: &str = "Relay auto select";
 const DEFAULT_URL_TEST_INTERVAL: u64 = 600;
+const DEFAULT_SUB_PREFIX: &str = "sub";
 
 static DISABLE_CACHE: OnceCell<bool> = OnceCell::new();
 static URL_TEST_INTERVAL: OnceCell<u64> = OnceCell::new();
+static SUB_PREFIX: OnceCell<String> = OnceCell::new();
 
 fn apply_change(
     mut remote: RemoteConfigure,
@@ -94,10 +98,18 @@ fn apply_change(
         local.test_url(),
     );
 
+    let backend_manual_or_auto_selector = ProxyGroup::new_select(
+        DEFAULT_BACKEND_AUTO_OR_MANUAL_SELECTOR_NAME.to_string(),
+        vec![
+            DEFAULT_RELAY_BACKEND_SELECTOR_NAME.to_string(),
+            DEFAULT_RELAY_URL_TEST_PROFILE_NAME.to_string(),
+        ],
+    );
+
     let manual_or_auto_selector = ProxyGroup::new_select(
         DEFAULT_CHOOSE_AUTO_PROFILE_NAME.to_string(),
         vec![
-            DEFAULT_RELAY_BACKEND_SELECTOR_NAME.to_string(),
+            DEFAULT_BACKEND_AUTO_OR_MANUAL_SELECTOR_NAME.to_string(),
             DEFAULT_RELAY_URL_TEST_PROFILE_NAME.to_string(),
         ],
     );
@@ -120,6 +132,7 @@ fn apply_change(
         relay_url_test_proxies,
         relay_selector,
         relay_backend_selector,
+        backend_manual_or_auto_selector,
         manual_or_auto_selector,
         base_relay.clone(),
         base_force_relay,
@@ -137,7 +150,7 @@ fn apply_change(
             let mut ret = element.clone();
 
             if element.group_type().eq("select") && element.proxies().len() > 2 {
-                ret.insert_to_head(DEFAULT_URL_TEST_PROFILE_NAME.to_string());
+                ret.insert_to_head(DEFAULT_BACKEND_AUTO_OR_MANUAL_SELECTOR_NAME.to_string());
                 ret.insert_to_head(base_relay.name().to_string());
             }
             ret
@@ -186,7 +199,7 @@ async fn async_main(configure_file: String) -> anyhow::Result<()> {
 
     let router = Router::new()
         .route(
-            "/sub/:sub_id",
+            &format!("/{}/:sub_id", SUB_PREFIX.get().unwrap()),
             axum::routing::get({
                 let share_configure = arc_configure.clone();
                 move |sub_id| get(sub_id, share_configure)
@@ -198,6 +211,7 @@ async fn async_main(configure_file: String) -> anyhow::Result<()> {
                 Json(json!({ "version": env!("CARGO_PKG_VERSION"), "status": 200 }))
             }),
         )
+        .fallback(|| async { (StatusCode::FORBIDDEN, "403 Forbidden") })
         .layer(ServiceBuilder::new().layer(TraceLayer::new_for_http()));
 
     let server_handler = axum_server::Handle::new();
@@ -231,6 +245,7 @@ fn main() -> anyhow::Result<()> {
             arg!(--config [configure_file] "Specify configure location (Default: ./config.yaml)"),
             arg!(--interval [url_test_interval] "Specify url test interval (Default: 600)"),
             arg!(--systemd "Disable log output in systemd"),
+            arg!(--prefix "Override server default prefix"),
         ])
         .get_matches();
 
@@ -250,6 +265,14 @@ fn main() -> anyhow::Result<()> {
             *matches
                 .get_one("interval")
                 .unwrap_or(&DEFAULT_URL_TEST_INTERVAL),
+        )
+        .unwrap();
+    SUB_PREFIX
+        .set(
+            matches
+                .get_one("prefix")
+                .unwrap_or(&DEFAULT_SUB_PREFIX.to_string())
+                .to_string(),
         )
         .unwrap();
 
