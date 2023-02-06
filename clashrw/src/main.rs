@@ -245,7 +245,7 @@ fn main() -> anyhow::Result<()> {
             arg!(--config [configure_file] "Specify configure location (Default: ./config.yaml)"),
             arg!(--interval [url_test_interval] "Specify url test interval (Default: 600)"),
             arg!(--systemd "Disable log output in systemd"),
-            arg!(--prefix "Override server default prefix"),
+            arg!(--prefix [prefix] "Override server default prefix"),
         ])
         .get_matches();
 
