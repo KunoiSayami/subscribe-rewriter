@@ -22,10 +22,12 @@ mod v1 {
                 Ok(event) => {
                     if Self::decide(event) {
                         tokio::runtime::Builder::new_current_thread()
-                            .enable_io()
                             .build()
-                            .unwrap()
-                            .block_on(Self::send_event(sender.clone()));
+                            .map(|runtime| runtime.block_on(Self::send_event(sender.clone())))
+                            .map_err(|e| {
+                                error!("[Can be safely ignored] Unable create runtime: {:?}", e)
+                            })
+                            .ok();
                     }
                 }
                 Err(e) => {

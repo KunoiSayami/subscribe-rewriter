@@ -1,9 +1,9 @@
 mod cache;
-mod live_reload;
+mod file_watcher;
 mod parser;
 mod web;
 
-use crate::live_reload::FileWatchDog;
+use crate::file_watcher::FileWatchDog;
 use crate::parser::{
     default_test_url, Configure, ProxyGroup, RemoteConfigure, ShareConfig, UpdateConfigureEvent,
 };
