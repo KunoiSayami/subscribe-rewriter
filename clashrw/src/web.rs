@@ -8,6 +8,7 @@ pub mod v1 {
     use axum::response::IntoResponse;
     use log::error;
     use std::sync::Arc;
+    use tokio::sync::RwLock;
 
     pub enum ErrorCode {
         Forbidden,
@@ -51,8 +52,9 @@ pub mod v1 {
 
     async fn sub_process(
         sub_id: String,
-        share_config: Arc<ShareConfig>,
+        share_config: Arc<RwLock<ShareConfig>>,
     ) -> Result<Response<String>, ErrorCode> {
+        let share_config = share_config.read().await;
         let mapper = share_config
             .search_url(&sub_id)
             .ok_or(ErrorCode::Forbidden)?;
@@ -79,7 +81,7 @@ pub mod v1 {
 
     pub async fn get(
         Path(sub_id): Path<String>,
-        share_configure: Arc<ShareConfig>,
+        share_configure: Arc<RwLock<ShareConfig>>,
     ) -> impl IntoResponse {
         match sub_process(sub_id, share_configure).await {
             Ok(response) => response,

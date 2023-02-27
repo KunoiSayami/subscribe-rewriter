@@ -329,6 +329,12 @@ mod configure {
         "http://www.gstatic.com/generate_204".to_string()
     }
 
+    #[derive(Clone, Debug)]
+    pub enum UpdateConfigureEvent {
+        NeedUpdate,
+        Terminate,
+    }
+
     #[derive(Clone, Debug, Deserialize)]
     pub struct Configure {
         upstream: Vec<UpStream>,
@@ -374,7 +380,7 @@ mod configure {
 
 mod share_config {
     use super::{Keyword, Proxies, Rules};
-    use crate::parser::Configure;
+    use crate::parser::{Configure, UpStream};
     use log::debug;
     use std::collections::HashMap;
 
@@ -396,14 +402,7 @@ mod share_config {
         }
         pub fn new(local_configure: Configure, redis_client: redis::Client) -> Self {
             Self {
-                upstream: {
-                    let mut m = HashMap::new();
-                    for map in local_configure.upstream() {
-                        m.insert(map.sub_id().to_string(), map.upstream().to_string());
-                    }
-                    debug!("Find {} subscriptions", m.len());
-                    m
-                },
+                upstream: Self::upstreams_into_hashmap(local_configure.upstream()),
                 rules: local_configure.rules().clone(),
                 proxies: local_configure.proxies().clone(),
                 keyword: local_configure.keyword().clone(),
@@ -423,12 +422,27 @@ mod share_config {
         pub fn test_url(&self) -> String {
             self.test_url.clone()
         }
+        pub fn upstreams_into_hashmap(v: &Vec<UpStream>) -> HashMap<String, String> {
+            let mut m = HashMap::new();
+            for map in v {
+                m.insert(map.sub_id().to_string(), map.upstream().to_string());
+            }
+            debug!("Find {} subscriptions", m.len());
+            m
+        }
+        pub fn update(&mut self, local_configure: Configure) {
+            self.upstream = Self::upstreams_into_hashmap(local_configure.upstream());
+            self.rules = local_configure.rules().clone();
+            self.keyword = local_configure.keyword().clone();
+            self.proxies = local_configure.proxies().clone();
+            self.test_url = local_configure.test_url().clone();
+        }
     }
 }
 
 use serde_derive::{Deserialize, Serialize};
 
-pub use configure::{default_test_url, Configure};
+pub use configure::{default_test_url, Configure, UpdateConfigureEvent};
 pub use http_configure::HttpServerConfigure;
 pub use keyword::Keyword;
 pub use proxies::{Proxies, Proxy};
