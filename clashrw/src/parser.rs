@@ -329,12 +329,6 @@ mod configure {
         "http://www.gstatic.com/generate_204".to_string()
     }
 
-    #[derive(Clone, Debug)]
-    pub enum UpdateConfigureEvent {
-        NeedUpdate,
-        Terminate,
-    }
-
     #[derive(Clone, Debug, Deserialize)]
     pub struct Configure {
         upstream: Vec<UpStream>,
@@ -381,8 +375,16 @@ mod configure {
 mod share_config {
     use super::{Keyword, Proxies, Rules};
     use crate::parser::{Configure, UpStream};
-    use log::debug;
+    use log::{debug, error, info};
     use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    #[derive(Clone, Debug)]
+    pub enum UpdateConfigureEvent {
+        NeedUpdate,
+        Terminate,
+    }
 
     pub struct ShareConfig {
         redis_client: redis::Client,
@@ -435,19 +437,55 @@ mod share_config {
             self.rules = local_configure.rules().clone();
             self.keyword = local_configure.keyword().clone();
             self.proxies = local_configure.proxies().clone();
-            self.test_url = local_configure.test_url().clone();
+            self.test_url = local_configure.test_url();
+        }
+
+        pub async fn configure_file_updater(
+            configure_path: String,
+            configure_file: Arc<RwLock<ShareConfig>>,
+            mut receiver: tokio::sync::mpsc::Receiver<UpdateConfigureEvent>,
+        ) {
+            while let Some(event) = receiver.recv().await {
+                match event {
+                    UpdateConfigureEvent::NeedUpdate => {
+                        let mut cfg = configure_file.write().await;
+                        if let Ok(new_cfg) = tokio::fs::read_to_string(&configure_path)
+                            .await
+                            .map_err(|e| {
+                                error!(
+                                    "[Can be safely ignored] Unable to read configure file: {:?}",
+                                    e
+                                )
+                            })
+                            .and_then(|s| {
+                                serde_yaml::from_str::<Configure>(s.as_str()).map_err(|e| {
+                                    error!(
+                                    "[Can be safely ignored] Unable to parse local configure: {:?}",
+                                    e
+                                )
+                                })
+                            })
+                        {
+                            cfg.update(new_cfg);
+                            info!("Reloaded local configure file.");
+                        };
+                    }
+                    UpdateConfigureEvent::Terminate => break,
+                }
+            }
+            debug!("File updater exited!");
         }
     }
 }
 
 use serde_derive::{Deserialize, Serialize};
 
-pub use configure::{default_test_url, Configure, UpdateConfigureEvent};
+pub use configure::{default_test_url, Configure};
 pub use http_configure::HttpServerConfigure;
 pub use keyword::Keyword;
 pub use proxies::{Proxies, Proxy};
 pub use proxy_groups::{ProxyGroup, ProxyGroups};
 pub use remote_configure::RemoteConfigure;
 pub use rules::Rules;
-pub use share_config::ShareConfig;
+pub use share_config::{ShareConfig, UpdateConfigureEvent};
 pub use upstream::UpStream;

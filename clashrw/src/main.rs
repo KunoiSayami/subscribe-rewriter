@@ -1,7 +1,9 @@
 mod cache;
+mod live_reload;
 mod parser;
 mod web;
 
+use crate::live_reload::FileWatchDog;
 use crate::parser::{
     default_test_url, Configure, ProxyGroup, RemoteConfigure, ShareConfig, UpdateConfigureEvent,
 };
@@ -10,14 +12,11 @@ use anyhow::anyhow;
 use axum::http::StatusCode;
 use axum::{Json, Router};
 use clap::{arg, command};
-use log::{debug, error, info, warn, LevelFilter};
-use notify::{RecursiveMode, Watcher};
+use log::{info, warn, LevelFilter};
 use once_cell::sync::OnceCell;
 use serde_json::json;
 use std::io::Write;
-use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{RwLock, RwLockReadGuard};
 use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
@@ -186,46 +185,6 @@ fn apply_change(
     Ok(remote)
 }
 
-async fn configure_file_updater(
-    configure_path: String,
-    configure_file: Arc<RwLock<ShareConfig>>,
-    mut receiver: tokio::sync::mpsc::Receiver<UpdateConfigureEvent>,
-) -> () {
-    while let Some(event) = receiver.recv().await {
-        match event {
-            UpdateConfigureEvent::NeedUpdate => {
-                let mut cfg = configure_file.write().await;
-                if let Some(new_cfg) = tokio::fs::read_to_string(&configure_path)
-                    .await
-                    .map_err(|e| {
-                        error!(
-                            "[Can be safely ignored] Unable to read configure file: {:?}",
-                            e
-                        )
-                    })
-                    .ok()
-                    .map(|s| {
-                        serde_yaml::from_str::<Configure>(s.as_str())
-                            .map_err(|e| {
-                                error!(
-                                    "[Can be safely ignored] Unable to parse local configure: {:?}",
-                                    e
-                                )
-                            })
-                            .ok()
-                    })
-                    .flatten()
-                {
-                    cfg.update(new_cfg);
-                    info!("Reloaded local configure file.");
-                };
-            }
-            UpdateConfigureEvent::Terminate => break,
-        }
-    }
-    debug!("File updater exited!");
-}
-
 async fn async_main(
     configure_path: String,
     file_update_sender: tokio::sync::mpsc::Sender<UpdateConfigureEvent>,
@@ -272,6 +231,12 @@ async fn async_main(
             .serve(router.into_make_service()),
     );
 
+    let file_reloader = tokio::spawn(ShareConfig::configure_file_updater(
+        configure_path,
+        arc_configure,
+        file_update_receiver,
+    ));
+
     tokio::select! {
         _ = async {
             tokio::signal::ctrl_c().await.unwrap();
@@ -283,73 +248,22 @@ async fn async_main(
             std::process::exit(137)
         } => {
         },
-        _ = configure_file_updater(configure_path, arc_configure, file_update_receiver) => {
-
-        }
         _ = server => {
         }
     }
 
+    tokio::select! {
+        _ = async {
+            tokio::signal::ctrl_c().await.unwrap();
+        } => {
+            warn!("Force exit from file reloader!");
+        }
+        ret = file_reloader => {
+            ret?;
+        }
+    }
+
     Ok(())
-}
-
-async fn send_event(sender: tokio::sync::mpsc::Sender<UpdateConfigureEvent>) -> Option<()> {
-    sender
-        .send(UpdateConfigureEvent::NeedUpdate)
-        .await
-        .map_err(|_| {
-            error!("[Can be safely ignored] Got error while sending event to update thread")
-        })
-        .ok()
-}
-
-fn file_watching(
-    file: String,
-    stop_signal_channel: oneshot::Receiver<bool>,
-    sender: tokio::sync::mpsc::Sender<UpdateConfigureEvent>,
-) -> Option<()> {
-    let mut watcher = notify::recommended_watcher(move |res| match res {
-        Ok(_event) => {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_io()
-                .build()
-                .unwrap()
-                .block_on(send_event(sender.clone()));
-        }
-        Err(e) => {
-            error!(
-                "[Can be safely ignored] Got error while watching file {:?}",
-                e
-            )
-        }
-    })
-    .map_err(|e| error!("[Can be safely ignored] Can't start watcher {:?}", e))
-    .ok()?;
-
-    let path = PathBuf::from(file);
-
-    watcher
-        .watch(&path, RecursiveMode::NonRecursive)
-        .map_err(|e| error!("[Can be safely ignored] Unable to watch file: {:?}", e))
-        .ok()?;
-
-    stop_signal_channel
-        .recv()
-        .map_err(|e| {
-            error!(
-                "[Can be safely ignored] Got error while poll oneshot event: {:?}",
-                e
-            )
-        })
-        .ok();
-
-    watcher
-        .unwatch(&path)
-        .map_err(|e| error!("[Can be safely ignored] Unable to unwatch file: {:?}", e))
-        .ok()?;
-
-    debug!("File watcher exited!");
-    Some(())
 }
 
 fn main() -> anyhow::Result<()> {
@@ -394,15 +308,10 @@ fn main() -> anyhow::Result<()> {
         .get_one("config")
         .map(|s: &String| s.to_string())
         .unwrap_or_else(|| DEFAULT_CONFIG_LOCATION.to_string());
-    let alt_configure_path = config_path.clone();
 
-    let (watcher_stop_signal, receiver) = oneshot::channel();
     let (file_update_sender, file_update_receiver) = tokio::sync::mpsc::channel(1);
 
-    let file_watching_thread = {
-        let sender = file_update_sender.clone();
-        std::thread::spawn(|| file_watching(alt_configure_path, receiver, sender))
-    };
+    let file_watching_thread = FileWatchDog::start(config_path.clone(), file_update_sender.clone());
 
     let main_ret = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -414,30 +323,6 @@ fn main() -> anyhow::Result<()> {
             file_update_receiver,
         ));
 
-    if !file_watching_thread.is_finished() {
-        let ret = watcher_stop_signal.send(true).map_err(|e| {
-            error!(
-                "[Can be safely ignored] Unable send terminate signal to file watcher thread: {:?}",
-                e
-            )
-        });
-        if ret.is_err() {
-            return main_ret;
-        }
-        std::thread::spawn(move || {
-            for _ in 0..5 {
-                std::thread::sleep(Duration::from_millis(100));
-                if file_watching_thread.is_finished() {
-                    break;
-                }
-            }
-            if !file_watching_thread.is_finished() {
-                warn!("[Can be safely ignored] File watching not finished yet.");
-            }
-        })
-        .join()
-        .unwrap();
-    }
-
+    file_watching_thread.stop();
     main_ret
 }
