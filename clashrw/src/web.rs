@@ -10,6 +10,7 @@ pub mod v1 {
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
+    #[derive(Clone)]
     pub enum ErrorCode {
         Forbidden,
         InternalServerError,

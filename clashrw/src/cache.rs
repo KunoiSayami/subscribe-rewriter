@@ -3,6 +3,7 @@ mod file_cache {
     use log::error;
     use redis::AsyncCommands;
     use serde_derive::{Deserialize, Serialize};
+    use tap::TapFallible;
 
     #[derive(Clone, Debug, Deserialize, Serialize)]
     pub struct FileCache {
@@ -28,12 +29,12 @@ mod file_cache {
             mut redis_conn: redis::aio::Connection,
         ) {
             if let Ok(s) = serde_yaml::to_string(self)
-                .map_err(|e| error!("[Can be safely ignored] Serialize cache_ error: {:?}", e))
+                .tap_err(|e| error!("[Can be safely ignored] Serialize cache_ error: {:?}", e))
             {
                 redis_conn
                     .set_ex::<_, String, i64>(&redis_key, s, CACHE_TIME)
                     .await
-                    .map_err(|e| error!("[Can be safely ignored] Write to redis error: {:?}", e))
+                    .tap_err(|e| error!("[Can be safely ignored] Write to redis error: {:?}", e))
                     .ok();
             }
         }
@@ -52,6 +53,7 @@ mod cache_ {
     use log::{debug, error, warn};
     use redis::AsyncCommands;
     use std::time::Duration;
+    use tap::TapFallible;
 
     pub const CACHE_TIME: usize = 600;
 
@@ -94,9 +96,9 @@ mod cache_ {
         Ok((ret, remote_status))
     }
 
-    fn read_cache(content: Result<Option<String>, ()>) -> Option<FileCache> {
-        serde_yaml::from_str(content.ok()??.as_str())
-            .map_err(|e| {
+    fn read_cache(content: Option<String>) -> Option<FileCache> {
+        serde_yaml::from_str(content?.as_str())
+            .tap_err(|e| {
                 warn!(
                     "[Can be safely ignored] Got error while serialize cache_ yaml: {:?}",
                     e
@@ -112,7 +114,7 @@ mod cache_ {
     ) -> Result<(RemoteConfigure, String), ErrorCode> {
         if let Ok(ref mut redis_conn) = redis_conn {
             if !DISABLE_CACHE.get().unwrap() {
-                let ret = redis_conn.exists(&redis_key).await.map_err(|e| {
+                let ret = redis_conn.exists(&redis_key).await.tap_err(|e| {
                     warn!(
                         "[Can be safely ignored] Got error in query key {:?}: {:?}",
                         redis_key, e
@@ -123,13 +125,14 @@ mod cache_ {
                         let cache = redis_conn
                             .get::<_, Option<String>>(&redis_key)
                             .await
-                            .map_err(|e| {
+                            .tap_err(|e| {
                                 warn!(
                                     "[Can be safely ignored] Got error in fetch key {:?}: {:?}",
                                     redis_key, e
                                 )
-                            });
-                        if let Some(cache) = read_cache(cache) {
+                            })
+                            .ok();
+                        if let Some(cache) = read_cache(cache.flatten()) {
                             debug!("Cache: Read from cache_");
                             return parse_remote_configure(cache.content(), cache.remote_status());
                         }

@@ -17,20 +17,29 @@ use once_cell::sync::OnceCell;
 use serde_json::json;
 use std::io::Write;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 use tokio::sync::{RwLock, RwLockReadGuard};
 use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
 
 const DEFAULT_CONFIG_LOCATION: &str = "config.yaml";
+
 const DEFAULT_RELAY_SELECTOR_NAME: &str = "Relay selector";
 const DEFAULT_FORCE_RELAY_SELECTOR_NAME: &str = "Force relay selector";
 const DEFAULT_RELAY_BACKEND_SELECTOR_NAME: &str = "Relay backend selector";
+
 const DEFAULT_RELAY_NAME: &str = "Use Relay";
 const DEFAULT_FORCE_RELAY_NAME: &str = "Force use Relay";
+
 const DEFAULT_BACKEND_AUTO_OR_MANUAL_SELECTOR_NAME: &str = "Backend Manual or Auto";
 const DEFAULT_CHOOSE_AUTO_PROFILE_NAME: &str = "Manual or Auto";
 const DEFAULT_URL_TEST_PROFILE_NAME: &str = "Auto select";
+
 const DEFAULT_RELAY_URL_TEST_PROFILE_NAME: &str = "Relay auto select";
+const DEFAULT_BYPASS_OR_RELAY_PROFILE_NAME: &str = "Bypass or Relay";
+
+const DIRECT_NAME: &str = "DIRECT";
+
 const DEFAULT_URL_TEST_INTERVAL: u64 = 600;
 const DEFAULT_SUB_PREFIX: &str = "sub";
 
@@ -75,34 +84,40 @@ fn apply_change(
         .map(|proxy| proxy.name().to_string())
         .collect::<Vec<_>>();
 
+    // Relay selector
     let relay_selector = ProxyGroup::new_select(
         DEFAULT_RELAY_SELECTOR_NAME.to_string(),
         local_proxy_name.clone(),
     )
     .insert_direct();
 
+    // Force relay selector
     let force_relay_selector = ProxyGroup::new_select(
         DEFAULT_FORCE_RELAY_SELECTOR_NAME.to_string(),
         local_proxy_name,
     );
 
+    // Relay backend selector
     let relay_backend_selector = ProxyGroup::new_select(
         DEFAULT_RELAY_BACKEND_SELECTOR_NAME.to_string(),
         interest_proxy.iter().map(|x| x.to_string()).collect(),
     );
 
+    // Auto selector
     let url_test_proxies = ProxyGroup::new_url_test(
         DEFAULT_URL_TEST_PROFILE_NAME.to_string(),
         interest_proxy.clone(),
         default_test_url(),
     );
 
+    // Relay auto selector
     let relay_url_test_proxies = ProxyGroup::new_url_test(
         DEFAULT_RELAY_URL_TEST_PROFILE_NAME.to_string(),
         interest_proxy,
         local.test_url(),
     );
 
+    // Backend manual or auto selector
     let backend_manual_or_auto_selector = ProxyGroup::new_select(
         DEFAULT_BACKEND_AUTO_OR_MANUAL_SELECTOR_NAME.to_string(),
         vec![
@@ -111,6 +126,7 @@ fn apply_change(
         ],
     );
 
+    // Manual or auto selector (Basic by url test)
     let manual_or_auto_selector = ProxyGroup::new_select(
         DEFAULT_CHOOSE_AUTO_PROFILE_NAME.to_string(),
         vec![
@@ -119,16 +135,27 @@ fn apply_change(
         ],
     );
 
+    // Relay profile
     let base_relay = ProxyGroup::new_relay(
         DEFAULT_RELAY_NAME.to_string(),
         DEFAULT_CHOOSE_AUTO_PROFILE_NAME.to_string(),
         DEFAULT_RELAY_SELECTOR_NAME.to_string(),
     );
 
+    // Force use relay profile
     let base_force_relay = ProxyGroup::new_relay(
         DEFAULT_FORCE_RELAY_NAME.to_string(),
         DEFAULT_CHOOSE_AUTO_PROFILE_NAME.to_string(),
         DEFAULT_FORCE_RELAY_SELECTOR_NAME.to_string(),
+    );
+
+    let force_relay_or_bypass = ProxyGroup::new_select(
+        DEFAULT_BYPASS_OR_RELAY_PROFILE_NAME.to_string(),
+        vec![
+            DIRECT_NAME.to_string(),
+            DEFAULT_FORCE_RELAY_NAME.to_string(),
+            DEFAULT_RELAY_SELECTOR_NAME.to_string(),
+        ],
     );
 
     new_proxy_group.extend(vec![
@@ -139,6 +166,7 @@ fn apply_change(
         relay_backend_selector,
         backend_manual_or_auto_selector,
         manual_or_auto_selector,
+        force_relay_or_bypass,
         base_relay.clone(),
         base_force_relay,
     ]);
@@ -187,8 +215,8 @@ fn apply_change(
 
 async fn async_main(
     configure_path: String,
-    file_update_sender: tokio::sync::mpsc::Sender<UpdateConfigureEvent>,
-    file_update_receiver: tokio::sync::mpsc::Receiver<UpdateConfigureEvent>,
+    file_update_sender: mpsc::Sender<UpdateConfigureEvent>,
+    file_update_receiver: mpsc::Receiver<UpdateConfigureEvent>,
 ) -> anyhow::Result<()> {
     let local_file: Configure = serde_yaml::from_str(
         tokio::fs::read_to_string(&configure_path)
@@ -269,11 +297,13 @@ async fn async_main(
 fn main() -> anyhow::Result<()> {
     let matches = command!()
         .args(&[
+            arg!(-c --config [configure_file] "Specify configure location")
+                .default_value(DEFAULT_CONFIG_LOCATION),
+            arg!(--interval [url_test_interval] "Specify url test interval [default: 600]"),
+            arg!(--systemd "Disable datetime output in syslog"),
             arg!(--nocache "Disable cache"),
-            arg!(--config [configure_file] "Specify configure location (Default: ./config.yaml)"),
-            arg!(--interval [url_test_interval] "Specify url test interval (Default: 600)"),
-            arg!(--systemd "Disable log output in systemd"),
-            arg!(--prefix [prefix] "Override server default prefix"),
+            arg!(--prefix [prefix] "Override server default prefix")
+                .default_value(DEFAULT_SUB_PREFIX),
         ])
         .get_matches();
 
@@ -296,12 +326,7 @@ fn main() -> anyhow::Result<()> {
         )
         .unwrap();
     SUB_PREFIX
-        .set(
-            matches
-                .get_one("prefix")
-                .unwrap_or(&DEFAULT_SUB_PREFIX.to_string())
-                .to_string(),
-        )
+        .set(matches.get_one::<String>("prefix").unwrap().to_string())
         .unwrap();
 
     let config_path = matches

@@ -5,6 +5,7 @@ mod v1 {
     use std::path::PathBuf;
     use std::thread::JoinHandle;
     use std::time::Duration;
+    use tap::TapFallible;
 
     #[derive(Debug)]
     pub struct FileWatchDog {
@@ -24,7 +25,7 @@ mod v1 {
                         tokio::runtime::Builder::new_current_thread()
                             .build()
                             .map(|runtime| runtime.block_on(Self::send_event(sender.clone())))
-                            .map_err(|e| {
+                            .tap_err(|e| {
                                 error!("[Can be safely ignored] Unable create runtime: {:?}", e)
                             })
                             .ok();
@@ -37,19 +38,19 @@ mod v1 {
                     )
                 }
             })
-            .map_err(|e| error!("[Can be safely ignored] Can't start watcher {:?}", e))
+            .tap_err(|e| error!("[Can be safely ignored] Can't start watcher {:?}", e))
             .ok()?;
 
             let path = PathBuf::from(file);
 
             watcher
                 .watch(&path, RecursiveMode::NonRecursive)
-                .map_err(|e| error!("[Can be safely ignored] Unable to watch file: {:?}", e))
+                .tap_err(|e| error!("[Can be safely ignored] Unable to watch file: {:?}", e))
                 .ok()?;
 
             stop_signal_channel
                 .recv()
-                .map_err(|e| {
+                .tap_err(|e| {
                     error!(
                         "[Can be safely ignored] Got error while poll oneshot event: {:?}",
                         e
@@ -59,7 +60,7 @@ mod v1 {
 
             watcher
                 .unwatch(&path)
-                .map_err(|e| error!("[Can be safely ignored] Unable to unwatch file: {:?}", e))
+                .tap_err(|e| error!("[Can be safely ignored] Unable to unwatch file: {:?}", e))
                 .ok()?;
 
             debug!("File watcher exited!");
@@ -80,7 +81,7 @@ mod v1 {
             sender
                 .send(UpdateConfigureEvent::NeedUpdate)
                 .await
-                .map_err(|_| {
+                .tap_err(|_| {
                     error!("[Can be safely ignored] Got error while sending event to update thread")
                 })
                 .ok()
@@ -101,7 +102,7 @@ mod v1 {
             if !self.handler.is_finished() {
                 self.stop_signal_channel
                     .send(true)
-                    .map_err(|e| {
+                    .tap_err(|e| {
                         error!(
                 "[Can be safely ignored] Unable send terminate signal to file watcher thread: {:?}",
                 e

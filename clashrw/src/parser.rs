@@ -39,8 +39,8 @@ mod proxies {
 }
 
 mod proxy_groups {
-
     use super::{Deserialize, Serialize};
+    use crate::DIRECT_NAME;
 
     #[derive(Clone, Debug, Default, Deserialize, Serialize)]
     pub struct ProxyGroup {
@@ -106,12 +106,12 @@ mod proxy_groups {
         pub fn insert_direct(mut self) -> Self {
             debug_assert!({
                 if let Some(proxy) = self.proxies.last() {
-                    !proxy.eq("DIRECT")
+                    !proxy.eq(DIRECT_NAME)
                 } else {
                     true
                 }
             });
-            self.proxies.push("DIRECT".to_string());
+            self.proxies.push(DIRECT_NAME.to_string());
             self
         }
     }
@@ -378,6 +378,7 @@ mod share_config {
     use log::{debug, error, info};
     use std::collections::HashMap;
     use std::sync::Arc;
+    use tap::TapFallible;
     use tokio::sync::RwLock;
 
     #[derive(Clone, Debug)]
@@ -449,21 +450,24 @@ mod share_config {
                 match event {
                     UpdateConfigureEvent::NeedUpdate => {
                         let mut cfg = configure_file.write().await;
-                        if let Ok(new_cfg) = tokio::fs::read_to_string(&configure_path)
+                        if let Some(new_cfg) = tokio::fs::read_to_string(&configure_path)
                             .await
-                            .map_err(|e| {
+                            .tap_err(|e| {
                                 error!(
                                     "[Can be safely ignored] Unable to read configure file: {:?}",
                                     e
                                 )
                             })
+                            .ok()
                             .and_then(|s| {
-                                serde_yaml::from_str::<Configure>(s.as_str()).map_err(|e| {
-                                    error!(
+                                serde_yaml::from_str::<Configure>(s.as_str())
+                                    .tap_err(|e| {
+                                        error!(
                                     "[Can be safely ignored] Unable to parse local configure: {:?}",
                                     e
                                 )
-                                })
+                                    })
+                                    .ok()
                             })
                         {
                             cfg.update(new_cfg);
