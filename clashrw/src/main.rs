@@ -4,9 +4,7 @@ mod parser;
 mod web;
 
 use crate::file_watcher::FileWatchDog;
-use crate::parser::{
-    default_test_url, Configure, ProxyGroup, RemoteConfigure, ShareConfig, UpdateConfigureEvent,
-};
+use crate::parser::{Configure, ProxyGroup, RemoteConfigure, ShareConfig, UpdateConfigureEvent};
 use crate::web::get;
 use anyhow::anyhow;
 use axum::http::StatusCode;
@@ -31,12 +29,10 @@ const DEFAULT_RELAY_BACKEND_SELECTOR_NAME: &str = "Relay backend selector";
 const DEFAULT_RELAY_NAME: &str = "Use Relay";
 const DEFAULT_FORCE_RELAY_NAME: &str = "Force use Relay";
 
-const DEFAULT_BACKEND_AUTO_OR_MANUAL_SELECTOR_NAME: &str = "Backend Manual or Auto";
-const DEFAULT_CHOOSE_AUTO_PROFILE_NAME: &str = "Manual or Auto";
-const DEFAULT_URL_TEST_PROFILE_NAME: &str = "Auto select";
+const DEFAULT_BACKEND_OR_DIRECT_NAME: &str = "Backend or Direct";
 
-const DEFAULT_RELAY_URL_TEST_PROFILE_NAME: &str = "Relay auto select";
 const DEFAULT_BYPASS_OR_RELAY_PROFILE_NAME: &str = "Bypass or Relay";
+const DEFAULT_FORCE_BYPASS_OR_RELAY_PROFILE_NAME: &str = "Bypass or Force relay";
 
 const DIRECT_NAME: &str = "DIRECT";
 
@@ -103,54 +99,28 @@ fn apply_change(
         interest_proxy.iter().map(|x| x.to_string()).collect(),
     );
 
-    // Auto selector
-    let url_test_proxies = ProxyGroup::new_url_test(
-        DEFAULT_URL_TEST_PROFILE_NAME.to_string(),
-        interest_proxy.clone(),
-        default_test_url(),
-    );
-
-    // Relay auto selector
-    let relay_url_test_proxies = ProxyGroup::new_url_test(
-        DEFAULT_RELAY_URL_TEST_PROFILE_NAME.to_string(),
-        interest_proxy,
-        local.test_url(),
-    );
-
-    // Backend manual or auto selector
-    let backend_manual_or_auto_selector = ProxyGroup::new_select(
-        DEFAULT_BACKEND_AUTO_OR_MANUAL_SELECTOR_NAME.to_string(),
-        vec![
-            DEFAULT_RELAY_BACKEND_SELECTOR_NAME.to_string(),
-            DEFAULT_RELAY_URL_TEST_PROFILE_NAME.to_string(),
-        ],
-    );
-
-    // Manual or auto selector (Basic by url test)
-    let manual_or_auto_selector = ProxyGroup::new_select(
-        DEFAULT_CHOOSE_AUTO_PROFILE_NAME.to_string(),
-        vec![
-            DEFAULT_BACKEND_AUTO_OR_MANUAL_SELECTOR_NAME.to_string(),
-            DEFAULT_RELAY_URL_TEST_PROFILE_NAME.to_string(),
-        ],
-    );
+    let backend_or_direct = ProxyGroup::new_select(
+        DEFAULT_BACKEND_OR_DIRECT_NAME.to_string(),
+        vec![DEFAULT_RELAY_SELECTOR_NAME.to_string()],
+    )
+    .insert_direct();
 
     // Relay profile
     let base_relay = ProxyGroup::new_relay(
         DEFAULT_RELAY_NAME.to_string(),
-        DEFAULT_CHOOSE_AUTO_PROFILE_NAME.to_string(),
+        DEFAULT_RELAY_BACKEND_SELECTOR_NAME.to_string(),
         DEFAULT_RELAY_SELECTOR_NAME.to_string(),
     );
 
     // Force use relay profile
     let base_force_relay = ProxyGroup::new_relay(
         DEFAULT_FORCE_RELAY_NAME.to_string(),
-        DEFAULT_CHOOSE_AUTO_PROFILE_NAME.to_string(),
+        DEFAULT_BACKEND_OR_DIRECT_NAME.to_string(),
         DEFAULT_FORCE_RELAY_SELECTOR_NAME.to_string(),
     );
 
     let force_relay_or_bypass = ProxyGroup::new_select(
-        DEFAULT_BYPASS_OR_RELAY_PROFILE_NAME.to_string(),
+        DEFAULT_FORCE_BYPASS_OR_RELAY_PROFILE_NAME.to_string(),
         vec![
             DIRECT_NAME.to_string(),
             DEFAULT_FORCE_RELAY_NAME.to_string(),
@@ -158,15 +128,18 @@ fn apply_change(
         ],
     );
 
+    let relay_or_bypass = ProxyGroup::new_select(
+        DEFAULT_BYPASS_OR_RELAY_PROFILE_NAME.to_string(),
+        vec![DIRECT_NAME.to_string(), DEFAULT_RELAY_NAME.to_string()],
+    );
+
     new_proxy_group.extend(vec![
         force_relay_selector,
-        url_test_proxies,
-        relay_url_test_proxies,
         relay_selector,
         relay_backend_selector,
-        backend_manual_or_auto_selector,
-        manual_or_auto_selector,
+        backend_or_direct,
         force_relay_or_bypass,
+        relay_or_bypass,
         base_relay.clone(),
         base_force_relay,
     ]);
@@ -183,7 +156,7 @@ fn apply_change(
             let mut ret = element.clone();
 
             if element.group_type().eq("select") && element.proxies().len() > 2 {
-                ret.insert_to_head(DEFAULT_BACKEND_AUTO_OR_MANUAL_SELECTOR_NAME.to_string());
+                ret.insert_to_head(DEFAULT_BACKEND_OR_DIRECT_NAME.to_string());
                 ret.insert_to_head(base_relay.name().to_string());
             }
             ret

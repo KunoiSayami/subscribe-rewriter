@@ -88,6 +88,7 @@ mod proxy_groups {
             }
         }
 
+        #[allow(unused)]
         pub fn new_url_test(name: String, proxies: Vec<String>, url: String) -> Self {
             Self {
                 name,
@@ -422,9 +423,9 @@ mod share_config {
         pub fn keyword(&self) -> &Keyword {
             &self.keyword
         }
-        pub fn test_url(&self) -> String {
+        /*pub fn test_url(&self) -> String {
             self.test_url.clone()
-        }
+        }*/
         pub fn upstreams_into_hashmap(v: &Vec<UpStream>) -> HashMap<String, String> {
             let mut m = HashMap::new();
             for map in v {
