@@ -22,17 +22,7 @@ use tower_http::trace::TraceLayer;
 
 const DEFAULT_CONFIG_LOCATION: &str = "config.yaml";
 
-const DEFAULT_RELAY_SELECTOR_NAME: &str = "Relay selector";
-const DEFAULT_FORCE_RELAY_SELECTOR_NAME: &str = "Force relay selector";
-const DEFAULT_RELAY_BACKEND_SELECTOR_NAME: &str = "Relay backend selector";
-
-const DEFAULT_RELAY_NAME: &str = "Use Relay";
-const DEFAULT_FORCE_RELAY_NAME: &str = "Force use Relay";
-
-const DEFAULT_BACKEND_OR_DIRECT_NAME: &str = "Backend or Direct";
-
-const DEFAULT_BYPASS_OR_RELAY_PROFILE_NAME: &str = "Bypass or Relay";
-const DEFAULT_FORCE_BYPASS_OR_RELAY_PROFILE_NAME: &str = "Bypass or Force relay";
+const DEFAULT_PROXY_OR_DIRECT_NAME: &str = "Proxy or Direct";
 
 const DIRECT_NAME: &str = "DIRECT";
 
@@ -49,27 +39,6 @@ fn apply_change(
 ) -> anyhow::Result<RemoteConfigure> {
     //let mut new_proxy_group_element = vec![];
 
-    // Filter interest proxy to relay
-    let interest_proxy = remote
-        .proxy_groups()
-        .get_vec()
-        .iter()
-        // Get first proxies length > 2
-        .find(|x| x.proxies().len() > 2)
-        // Make Option to Result
-        .ok_or_else(|| anyhow!("Group is smaller then excepted."))?
-        .proxies()
-        .iter()
-        .filter(|x| {
-            local
-                .keyword()
-                .accepted()
-                .iter()
-                .any(|keyword| x.contains(keyword))
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-
     // Build new relay proxy group
     let mut new_proxy_group = vec![];
 
@@ -80,69 +49,11 @@ fn apply_change(
         .map(|proxy| proxy.name().to_string())
         .collect::<Vec<_>>();
 
-    // Relay selector
-    let relay_selector = ProxyGroup::new_select(
-        DEFAULT_RELAY_SELECTOR_NAME.to_string(),
-        local_proxy_name.clone(),
-    )
-    .insert_direct();
+    let backup_or_direct =
+        ProxyGroup::new_select(DEFAULT_PROXY_OR_DIRECT_NAME.to_string(), local_proxy_name)
+            .insert_direct();
 
-    // Force relay selector
-    let force_relay_selector = ProxyGroup::new_select(
-        DEFAULT_FORCE_RELAY_SELECTOR_NAME.to_string(),
-        local_proxy_name,
-    );
-
-    // Relay backend selector
-    let relay_backend_selector = ProxyGroup::new_select(
-        DEFAULT_RELAY_BACKEND_SELECTOR_NAME.to_string(),
-        interest_proxy.iter().map(|x| x.to_string()).collect(),
-    );
-
-    let backend_or_direct = ProxyGroup::new_select(
-        DEFAULT_BACKEND_OR_DIRECT_NAME.to_string(),
-        vec![DEFAULT_RELAY_SELECTOR_NAME.to_string()],
-    )
-    .insert_direct();
-
-    // Relay profile
-    let base_relay = ProxyGroup::new_relay(
-        DEFAULT_RELAY_NAME.to_string(),
-        DEFAULT_RELAY_BACKEND_SELECTOR_NAME.to_string(),
-        DEFAULT_RELAY_SELECTOR_NAME.to_string(),
-    );
-
-    // Force use relay profile
-    let base_force_relay = ProxyGroup::new_relay(
-        DEFAULT_FORCE_RELAY_NAME.to_string(),
-        DEFAULT_BACKEND_OR_DIRECT_NAME.to_string(),
-        DEFAULT_FORCE_RELAY_SELECTOR_NAME.to_string(),
-    );
-
-    let force_relay_or_bypass = ProxyGroup::new_select(
-        DEFAULT_FORCE_BYPASS_OR_RELAY_PROFILE_NAME.to_string(),
-        vec![
-            DIRECT_NAME.to_string(),
-            DEFAULT_FORCE_RELAY_NAME.to_string(),
-            DEFAULT_RELAY_SELECTOR_NAME.to_string(),
-        ],
-    );
-
-    let relay_or_bypass = ProxyGroup::new_select(
-        DEFAULT_BYPASS_OR_RELAY_PROFILE_NAME.to_string(),
-        vec![DIRECT_NAME.to_string(), DEFAULT_RELAY_NAME.to_string()],
-    );
-
-    new_proxy_group.extend(vec![
-        force_relay_selector,
-        relay_selector,
-        relay_backend_selector,
-        backend_or_direct,
-        force_relay_or_bypass,
-        relay_or_bypass,
-        base_relay.clone(),
-        base_force_relay,
-    ]);
+    new_proxy_group.extend(vec![backup_or_direct]);
 
     // Build new proxy group
     //let mut proxy_group_items = vec![base_relay.name().to_string()];
@@ -156,8 +67,7 @@ fn apply_change(
             let mut ret = element.clone();
 
             if element.group_type().eq("select") && element.proxies().len() > 2 {
-                ret.insert_to_head(DEFAULT_BACKEND_OR_DIRECT_NAME.to_string());
-                ret.insert_to_head(base_relay.name().to_string());
+                ret.insert_to_head(DEFAULT_PROXY_OR_DIRECT_NAME.to_string());
             }
             ret
         })

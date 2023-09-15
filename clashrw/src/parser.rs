@@ -55,6 +55,7 @@ mod proxy_groups {
     }
 
     impl ProxyGroup {
+        #[allow(unused)]
         pub fn name(&self) -> &str {
             &self.name
         }
@@ -70,6 +71,7 @@ mod proxy_groups {
             self
         }
 
+        #[allow(unused)]
         pub fn new_relay(name: String, first: String, second: String) -> Self {
             Self {
                 name,
@@ -219,6 +221,7 @@ mod remote_configure {
     }
 }
 
+#[allow(unused)]
 mod keyword {
     use super::{Deserialize, Serialize};
 
@@ -420,6 +423,7 @@ mod share_config {
         pub fn proxies(&self) -> &Proxies {
             &self.proxies
         }
+        #[allow(unused)]
         pub fn keyword(&self) -> &Keyword {
             &self.keyword
         }
