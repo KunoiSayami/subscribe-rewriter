@@ -343,6 +343,8 @@ mod configure {
         test_url: String,
         #[serde(default)]
         http: HttpServerConfigure,
+        #[serde(default)]
+        manual_add_group_name: Vec<String>,
     }
 
     impl Configure {
@@ -373,6 +375,10 @@ mod configure {
         pub fn http(&self) -> &HttpServerConfigure {
             &self.http
         }
+
+        pub fn need_added_proxy(self) -> Vec<String> {
+            self.manual_add_group_name
+        }
     }
 }
 
@@ -398,6 +404,7 @@ mod share_config {
         proxies: Proxies,
         keyword: Keyword,
         test_url: String,
+        manual_insert_proxies: Vec<String>,
     }
 
     impl ShareConfig {
@@ -415,6 +422,7 @@ mod share_config {
                 keyword: local_configure.keyword().clone(),
                 redis_client,
                 test_url: local_configure.test_url(),
+                manual_insert_proxies: local_configure.need_added_proxy(),
             }
         }
         pub fn rules(&self) -> &Rules {
@@ -444,6 +452,7 @@ mod share_config {
             self.keyword = local_configure.keyword().clone();
             self.proxies = local_configure.proxies().clone();
             self.test_url = local_configure.test_url();
+            self.manual_insert_proxies = local_configure.need_added_proxy();
         }
 
         pub async fn configure_file_updater(
@@ -483,6 +492,9 @@ mod share_config {
                 }
             }
             debug!("File updater exited!");
+        }
+        pub fn manual_insert_proxies(&self) -> &Vec<String> {
+            &self.manual_insert_proxies
         }
     }
 }

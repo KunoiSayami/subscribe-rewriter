@@ -23,6 +23,7 @@ use tower_http::trace::TraceLayer;
 const DEFAULT_CONFIG_LOCATION: &str = "config.yaml";
 
 const DEFAULT_PROXY_OR_DIRECT_NAME: &str = "Proxy or Direct";
+const DEFAULT_FORCE_PROXY_OR_DIRECT_NAME: &str = "Force proxy or Direct";
 
 const DIRECT_NAME: &str = "DIRECT";
 
@@ -49,11 +50,20 @@ fn apply_change(
         .map(|proxy| proxy.name().to_string())
         .collect::<Vec<_>>();
 
-    let backup_or_direct =
-        ProxyGroup::new_select(DEFAULT_PROXY_OR_DIRECT_NAME.to_string(), local_proxy_name)
-            .insert_direct();
+    let backup_or_direct = ProxyGroup::new_select(
+        DEFAULT_FORCE_PROXY_OR_DIRECT_NAME.to_string(),
+        local_proxy_name.clone(),
+    );
 
-    new_proxy_group.extend(vec![backup_or_direct]);
+    let proxy_or_direct = ProxyGroup::new_select(DEFAULT_PROXY_OR_DIRECT_NAME.to_string(), {
+        let mut v = vec![DEFAULT_FORCE_PROXY_OR_DIRECT_NAME.to_string()];
+        v.extend(local_proxy_name.into_iter());
+        v.extend(local.manual_insert_proxies().iter().cloned());
+        v
+    })
+    .insert_direct();
+
+    new_proxy_group.extend(vec![backup_or_direct, proxy_or_direct]);
 
     // Build new proxy group
     //let mut proxy_group_items = vec![base_relay.name().to_string()];
@@ -67,7 +77,7 @@ fn apply_change(
             let mut ret = element.clone();
 
             if element.group_type().eq("select") && element.proxies().len() > 2 {
-                ret.insert_to_head(DEFAULT_PROXY_OR_DIRECT_NAME.to_string());
+                ret.insert_to_head(DEFAULT_FORCE_PROXY_OR_DIRECT_NAME.to_string());
             }
             ret
         })
