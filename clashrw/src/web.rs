@@ -6,6 +6,7 @@ pub mod v1 {
     use axum::extract::Path;
     use axum::http::Response;
     use axum::response::IntoResponse;
+    use axum::Extension;
     use log::error;
     use std::sync::Arc;
     use tokio::sync::RwLock;
@@ -82,7 +83,7 @@ pub mod v1 {
 
     pub async fn get(
         Path(sub_id): Path<String>,
-        share_configure: Arc<RwLock<ShareConfig>>,
+        Extension(share_configure): Extension<Arc<RwLock<ShareConfig>>>,
     ) -> impl IntoResponse {
         match sub_process(sub_id, share_configure).await {
             Ok(response) => response,

@@ -8,7 +8,7 @@ use crate::parser::{Configure, ProxyGroup, RemoteConfigure, ShareConfig, UpdateC
 use crate::web::get;
 use anyhow::anyhow;
 use axum::http::StatusCode;
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use clap::{arg, command};
 use log::{info, warn, LevelFilter};
 use once_cell::sync::OnceCell;
@@ -131,10 +131,7 @@ async fn async_main(
     let router = Router::new()
         .route(
             &format!("/{}/:sub_id", SUB_PREFIX.get().unwrap()),
-            axum::routing::get({
-                let share_configure = arc_configure.clone();
-                move |sub_id| get(sub_id, share_configure)
-            }),
+            axum::routing::get(get),
         )
         .route(
             "/",
@@ -143,6 +140,7 @@ async fn async_main(
             }),
         )
         .fallback(|| async { (StatusCode::FORBIDDEN, "403 Forbidden") })
+        .layer(Extension(arc_configure.clone()))
         .layer(ServiceBuilder::new().layer(TraceLayer::new_for_http()));
 
     let server_handler = axum_server::Handle::new();
