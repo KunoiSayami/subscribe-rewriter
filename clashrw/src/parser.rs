@@ -501,10 +501,10 @@ mod share_config {
 
 use serde_derive::{Deserialize, Serialize};
 
-pub use configure::{default_test_url, Configure};
+pub use configure::Configure;
 pub use http_configure::HttpServerConfigure;
 pub use keyword::Keyword;
-pub use proxies::{Proxies, Proxy};
+pub use proxies::Proxies;
 pub use proxy_groups::{ProxyGroup, ProxyGroups};
 pub use remote_configure::RemoteConfigure;
 pub use rules::Rules;

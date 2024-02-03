@@ -9,6 +9,7 @@ pub mod v1 {
     use axum::Extension;
     use log::error;
     use std::sync::Arc;
+    use tap::TapFallible;
     use tokio::sync::RwLock;
 
     #[derive(Clone)]
@@ -63,8 +64,8 @@ pub mod v1 {
         let redis_key = sha256::digest(mapper.as_str());
         let (content, remote_status) =
             read_or_fetch(mapper, redis_key, share_config.get_redis_connection().await).await?;
-        let ret =
-            apply_change(content, share_config).map_err(|e| error!("Apply change error: {:?}", e));
+        let ret = apply_change(content, share_config)
+            .tap_err(|e| error!("Apply change error: {:?}", e))?;
         let ret =
             serde_yaml::to_string(&ret).map_err(|e| error!("Serialize yaml failed: {:?}", e))?;
         let response = if remote_status.is_empty() {
