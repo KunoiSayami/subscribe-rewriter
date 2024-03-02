@@ -1,13 +1,13 @@
 pub mod v2 {
     use crate::apply_change;
-    use crate::cache::read_or_fetch;
+    use crate::cache::{parse_remote_configure, read_or_fetch};
     use crate::parser::ShareConfig;
     use anyhow::Error;
     use axum::extract::{Path, Query};
     use axum::http::Response;
     use axum::response::IntoResponse;
     use axum::Extension;
-    use log::{debug, error};
+    use log::error;
     use serde_derive::Deserialize;
     use std::sync::Arc;
     use tap::TapFallible;
@@ -94,14 +94,13 @@ pub mod v2 {
         .await?;
 
         let ret = if !method.eq("raw") {
-            apply_change(content, share_config)
-                .tap_err(|e| error!("Apply change error: {:?}", e))?
+            let ret = apply_change(parse_remote_configure(&content)?, share_config)
+                .tap_err(|e| error!("Apply change error: {:?}", e))?;
+
+            serde_yaml::to_string(&ret).map_err(|e| error!("Serialize yaml failed: {:?}", e))?
         } else {
             content
         };
-
-        let ret =
-            serde_yaml::to_string(&ret).map_err(|e| error!("Serialize yaml failed: {:?}", e))?;
 
         let response = if remote_status.is_empty() {
             Response::builder()

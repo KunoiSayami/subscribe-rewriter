@@ -82,10 +82,7 @@ mod cache_ {
         Ok((txt, header))
     }
 
-    fn parse_remote_configure(
-        txt: &str,
-        remote_status: String,
-    ) -> Result<(RemoteConfigure, String), ErrorCode> {
+    pub fn parse_remote_configure(txt: &str) -> Result<RemoteConfigure, ErrorCode> {
         let mut ret = serde_yaml::from_str::<RemoteConfigure>(txt).map_err(|e| {
             error!("Got error while decode remote file: {:?}", e);
             ErrorCode::NotAcceptable
@@ -93,7 +90,7 @@ mod cache_ {
 
         ret.optimize();
 
-        Ok((ret, remote_status))
+        Ok(ret)
     }
 
     fn read_cache(content: Option<String>) -> Option<FileCache> {
@@ -111,7 +108,7 @@ mod cache_ {
         url: &str,
         redis_key: String,
         mut redis_conn: anyhow::Result<redis::aio::Connection>,
-    ) -> Result<(RemoteConfigure, String), ErrorCode> {
+    ) -> Result<(String, String), ErrorCode> {
         if let Ok(ref mut redis_conn) = redis_conn {
             if !DISABLE_CACHE.get().unwrap() {
                 let ret = redis_conn.exists(&redis_key).await.tap_err(|e| {
@@ -134,7 +131,7 @@ mod cache_ {
                             .ok();
                         if let Some(cache) = read_cache(cache.flatten()) {
                             debug!("Cache: Read from cache_");
-                            return parse_remote_configure(cache.content(), cache.remote_status());
+                            return Ok((cache.content().to_string(), cache.remote_status()));
                         }
                     }
                 }
@@ -154,9 +151,9 @@ mod cache_ {
         if let Ok(redis_conn) = redis_conn {
             cache.write_to_redis(redis_key, redis_conn).await;
         }
-        parse_remote_configure(cache.content(), cache.remote_status())
+        Ok((cache.content().to_string(), cache.remote_status()))
     }
 }
 
-pub use cache_::{read_or_fetch, CACHE_TIME};
+pub use cache_::{parse_remote_configure, read_or_fetch, CACHE_TIME};
 pub use file_cache::FileCache;
