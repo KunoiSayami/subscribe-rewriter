@@ -62,12 +62,16 @@ pub mod v1 {
             .search_url(&sub_id)
             .ok_or(ErrorCode::Forbidden)?;
         let redis_key = sha256::digest(mapper.as_str());
+
         let (content, remote_status) =
             read_or_fetch(mapper, redis_key, share_config.get_redis_connection().await).await?;
+
         let ret = apply_change(content, share_config)
             .tap_err(|e| error!("Apply change error: {:?}", e))?;
+
         let ret =
             serde_yaml::to_string(&ret).map_err(|e| error!("Serialize yaml failed: {:?}", e))?;
+
         let response = if remote_status.is_empty() {
             Response::builder()
         } else {

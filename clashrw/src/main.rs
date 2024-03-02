@@ -72,7 +72,16 @@ fn apply_change(
     let proxy_or_direct = ProxyGroup::new_select(DEFAULT_PROXY_OR_DIRECT_NAME.to_string(), {
         let mut v = vec![DEFAULT_FORCE_PROXY_OR_DIRECT_NAME.to_string()];
         v.extend(local_proxy_name);
-        v.extend(local.manual_insert_proxies().iter().cloned());
+        for proxy in local.manual_insert_proxies().iter() {
+            if remote
+                .proxy_groups()
+                .get_vec()
+                .iter()
+                .any(|p| p.name().eq(proxy))
+            {
+                v.push(proxy.clone());
+            }
+        }
         v
     })
     .insert_direct();
