@@ -1,16 +1,22 @@
-pub mod v1 {
+pub mod v2 {
     use crate::apply_change;
     use crate::cache::read_or_fetch;
     use crate::parser::ShareConfig;
     use anyhow::Error;
-    use axum::extract::Path;
+    use axum::extract::{Path, Query};
     use axum::http::Response;
     use axum::response::IntoResponse;
     use axum::Extension;
-    use log::error;
+    use log::{debug, error};
+    use serde_derive::Deserialize;
     use std::sync::Arc;
     use tap::TapFallible;
     use tokio::sync::RwLock;
+
+    #[derive(Deserialize)]
+    pub struct QueryParams {
+        method: Option<String>,
+    }
 
     #[derive(Clone)]
     pub enum ErrorCode {
@@ -55,19 +61,44 @@ pub mod v1 {
 
     async fn sub_process(
         sub_id: String,
+        method: &str,
         share_config: Arc<RwLock<ShareConfig>>,
     ) -> Result<Response<String>, ErrorCode> {
         let share_config = share_config.read().await;
+
         let mapper = share_config
             .search_url(&sub_id)
             .ok_or(ErrorCode::Forbidden)?;
-        let redis_key = sha256::digest(mapper.as_str());
 
-        let (content, remote_status) =
-            read_or_fetch(mapper, redis_key, share_config.get_redis_connection().await).await?;
+        let redis_key = if !method.eq("raw") {
+            sha256::digest(mapper.upstream())
+        } else {
+            sha256::digest(format!("{}raw", mapper.upstream()))
+        };
 
-        let ret = apply_change(content, share_config)
-            .tap_err(|e| error!("Apply change error: {:?}", e))?;
+        let remote_url = if method.eq("raw") {
+            if let Some(s) = mapper.raw() {
+                s.as_str()
+            } else {
+                mapper.upstream()
+            }
+        } else {
+            mapper.upstream()
+        };
+
+        let (content, remote_status) = read_or_fetch(
+            remote_url,
+            redis_key,
+            share_config.get_redis_connection().await,
+        )
+        .await?;
+
+        let ret = if !method.eq("raw") {
+            apply_change(content, share_config)
+                .tap_err(|e| error!("Apply change error: {:?}", e))?
+        } else {
+            content
+        };
 
         let ret =
             serde_yaml::to_string(&ret).map_err(|e| error!("Serialize yaml failed: {:?}", e))?;
@@ -89,18 +120,23 @@ pub mod v1 {
     pub async fn get(
         Path(sub_id): Path<String>,
         Extension(share_configure): Extension<Arc<RwLock<ShareConfig>>>,
+        params: Query<QueryParams>,
     ) -> impl IntoResponse {
-        sub_process(sub_id, share_configure)
-            .await
-            .unwrap_or_else(|code| match code {
-                ErrorCode::Forbidden => forbidden(),
-                ErrorCode::InternalServerError => internal_server_error(),
-                ErrorCode::NotAcceptable => not_acceptable(),
-                ErrorCode::RequestTimeout => request_timeout(),
-            })
+        sub_process(
+            sub_id,
+            &params.method.clone().unwrap_or_default(),
+            share_configure,
+        )
+        .await
+        .unwrap_or_else(|code| match code {
+            ErrorCode::Forbidden => forbidden(),
+            ErrorCode::InternalServerError => internal_server_error(),
+            ErrorCode::NotAcceptable => not_acceptable(),
+            ErrorCode::RequestTimeout => request_timeout(),
+        })
     }
 }
 
 pub use current::get;
 pub use current::ErrorCode;
-pub use v1 as current;
+pub use v2 as current;

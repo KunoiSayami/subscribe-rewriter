@@ -338,6 +338,7 @@ mod upstream {
     pub struct UpStream {
         sub_id: String,
         upstream: String,
+        raw: Option<String>,
     }
 
     impl UpStream {
@@ -346,6 +347,9 @@ mod upstream {
         }
         pub fn upstream(&self) -> &str {
             &self.upstream
+        }
+        pub fn raw(&self) -> Option<&String> {
+            self.raw.as_ref()
         }
     }
 }
@@ -423,9 +427,32 @@ mod share_config {
         Terminate,
     }
 
+    pub struct UrlConfig {
+        upstream: String,
+        raw: Option<String>,
+    }
+
+    impl UrlConfig {
+        pub fn upstream(&self) -> &str {
+            &self.upstream
+        }
+        pub fn raw(&self) -> Option<&String> {
+            self.raw.as_ref()
+        }
+        pub fn new(upstream: String, raw: Option<String>) -> Self {
+            Self { upstream, raw }
+        }
+    }
+
+    impl From<&UpStream> for UrlConfig {
+        fn from(value: &UpStream) -> Self {
+            Self::new(value.upstream().to_string(), value.raw().cloned())
+        }
+    }
+
     pub struct ShareConfig {
         redis_client: redis::Client,
-        upstream: HashMap<String, String>,
+        upstream: HashMap<String, UrlConfig>,
         rules: Rules,
         proxies: Proxies,
         keyword: Keyword,
@@ -437,7 +464,7 @@ mod share_config {
         pub async fn get_redis_connection(&self) -> anyhow::Result<redis::aio::Connection> {
             Ok(self.redis_client.get_async_connection().await?)
         }
-        pub fn search_url(&self, key: &String) -> Option<&String> {
+        pub fn search_url(&self, key: &str) -> Option<&UrlConfig> {
             self.upstream.get(key)
         }
         pub fn new(local_configure: Configure, redis_client: redis::Client) -> Self {
@@ -464,10 +491,10 @@ mod share_config {
         /*pub fn test_url(&self) -> String {
             self.test_url.clone()
         }*/
-        pub fn upstreams_into_hashmap(v: &Vec<UpStream>) -> HashMap<String, String> {
+        pub fn upstreams_into_hashmap(v: &Vec<UpStream>) -> HashMap<String, UrlConfig> {
             let mut m = HashMap::new();
             for map in v {
-                m.insert(map.sub_id().to_string(), map.upstream().to_string());
+                m.insert(map.sub_id().to_string(), UrlConfig::from(map));
             }
             debug!("Find {} subscriptions", m.len());
             m
