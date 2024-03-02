@@ -4,16 +4,19 @@ mod parser;
 mod web;
 
 use crate::file_watcher::FileWatchDog;
-use crate::parser::{Configure, ProxyGroup, RemoteConfigure, ShareConfig, UpdateConfigureEvent};
+use crate::parser::{
+    Configure, Proxy, ProxyGroup, RemoteConfigure, ShareConfig, UpdateConfigureEvent,
+};
 use crate::web::get;
 use anyhow::anyhow;
 use axum::http::StatusCode;
 use axum::{Extension, Json, Router};
 use clap::{arg, command};
-use log::{info, warn, LevelFilter};
-use once_cell::sync::OnceCell;
+use log::{debug, info, warn, LevelFilter};
+use once_cell::sync::{Lazy, OnceCell};
 use serde_json::json;
 use std::io::Write;
+use std::string::ToString;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::{RwLock, RwLockReadGuard};
@@ -28,11 +31,22 @@ const DEFAULT_FORCE_PROXY_OR_DIRECT_NAME: &str = "Force proxy or Direct";
 const DIRECT_NAME: &str = "DIRECT";
 
 const DEFAULT_URL_TEST_INTERVAL: u64 = 600;
+static DEFAULT_URL_TEST_INTERVAL_STR: Lazy<String> =
+    Lazy::new(|| DEFAULT_URL_TEST_INTERVAL.to_string());
 const DEFAULT_SUB_PREFIX: &str = "sub";
 
 static DISABLE_CACHE: OnceCell<bool> = OnceCell::new();
 static URL_TEST_INTERVAL: OnceCell<u64> = OnceCell::new();
 static SUB_PREFIX: OnceCell<String> = OnceCell::new();
+
+pub fn get_name(value: &serde_yaml::Value) -> Option<String> {
+    if let serde_yaml::Value::Mapping(map) = value {
+        if let serde_yaml::Value::String(s) = map.get("name")? {
+            return Some(s.clone());
+        }
+    }
+    None
+}
 
 fn apply_change(
     mut remote: RemoteConfigure,
@@ -47,7 +61,7 @@ fn apply_change(
         .proxies()
         .get_vec()
         .iter()
-        .map(|proxy| proxy.name().to_string())
+        .map(|proxy| get_name(proxy).unwrap())
         .collect::<Vec<_>>();
 
     let backup_or_direct = ProxyGroup::new_select(
@@ -95,7 +109,7 @@ fn apply_change(
             .get_vec()
             .iter()
             // TODO: Should reserve empty configure
-            .filter(|x| !x.password().is_empty())
+            .filter(|x| Proxy::is_empty_password((*x).clone()).is_none())
             .cloned(),
     );
 
@@ -122,6 +136,11 @@ async fn async_main(
     let redis_conn = redis::Client::open(local_file.http().redis_address())?;
     let bind = format!(
         "{}:{}",
+        local_file.http().address(),
+        local_file.http().port()
+    );
+    debug!(
+        "Listen on {}:{}",
         local_file.http().address(),
         local_file.http().port()
     );
@@ -190,7 +209,9 @@ fn main() -> anyhow::Result<()> {
         .args(&[
             arg!(-c --config [configure_file] "Specify configure location")
                 .default_value(DEFAULT_CONFIG_LOCATION),
-            arg!(--interval [url_test_interval] "Specify url test interval [default: 600]"),
+            arg!(--interval [url_test_interval] "Specify url test interval [default: 600]")
+                .default_value(DEFAULT_URL_TEST_INTERVAL_STR.as_str())
+                .value_parser(clap::value_parser!(u64)),
             arg!(--systemd "Disable datetime output in syslog"),
             arg!(--nocache "Disable cache"),
             arg!(--prefix [prefix] "Override server default prefix")
@@ -210,11 +231,7 @@ fn main() -> anyhow::Result<()> {
 
     DISABLE_CACHE.set(matches.get_flag("nocache")).unwrap();
     URL_TEST_INTERVAL
-        .set(
-            *matches
-                .get_one("interval")
-                .unwrap_or(&DEFAULT_URL_TEST_INTERVAL),
-        )
+        .set(*matches.get_one("interval").unwrap())
         .unwrap();
     SUB_PREFIX
         .set(matches.get_one::<String>("prefix").unwrap().to_string())

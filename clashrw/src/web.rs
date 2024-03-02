@@ -86,15 +86,14 @@ pub mod v1 {
         Path(sub_id): Path<String>,
         Extension(share_configure): Extension<Arc<RwLock<ShareConfig>>>,
     ) -> impl IntoResponse {
-        match sub_process(sub_id, share_configure).await {
-            Ok(response) => response,
-            Err(code) => match code {
+        sub_process(sub_id, share_configure)
+            .await
+            .unwrap_or_else(|code| match code {
                 ErrorCode::Forbidden => forbidden(),
                 ErrorCode::InternalServerError => internal_server_error(),
                 ErrorCode::NotAcceptable => not_acceptable(),
                 ErrorCode::RequestTimeout => request_timeout(),
-            },
-        }
+            })
     }
 }
 

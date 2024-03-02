@@ -15,23 +15,29 @@ mod proxies {
     }
 
     impl Proxy {
-        pub fn name(&self) -> &str {
-            &self.name
-        }
         pub fn password(&self) -> &str {
             &self.password
+        }
+
+        pub fn is_empty_password(value: serde_yaml::Value) -> Option<String> {
+            let proxy: Self = serde_yaml::from_value(value).ok()?;
+            if proxy.password().is_empty() {
+                Some(proxy.name)
+            } else {
+                None
+            }
         }
     }
 
     #[derive(Clone, Debug, Deserialize, Serialize)]
-    pub struct Proxies(pub Vec<Proxy>);
+    pub struct Proxies(pub Vec<serde_yaml::Value>);
 
     impl Proxies {
-        pub fn get_vec(&self) -> &Vec<Proxy> {
+        pub fn get_vec(&self) -> &Vec<serde_yaml::Value> {
             &self.0
         }
 
-        pub fn set_vec(&mut self, v: Vec<Proxy>) -> &mut Self {
+        pub fn set_vec(&mut self, v: Vec<serde_yaml::Value>) -> &mut Self {
             self.0 = v;
             self
         }
@@ -159,6 +165,7 @@ mod rules {
 }
 mod remote_configure {
     use super::{Proxies, ProxyGroups, Rules};
+    use crate::parser::proxies::Proxy;
     use log::info;
 
     use super::{Deserialize, Serialize};
@@ -166,17 +173,18 @@ mod remote_configure {
     #[derive(Clone, Debug, Deserialize, Serialize)]
     pub struct RemoteConfigure {
         port: u16,
-        #[serde(rename = "socks-port")]
+        #[serde(rename = "socks-port", default = "default_socks_port")]
         socks_port: u16,
-        #[serde(rename = "redir-port")]
+        #[serde(rename = "redir-port", default = "default_redir_port")]
         redir_port: u16,
-        #[serde(rename = "allow-lan")]
+        #[serde(rename = "allow-lan", default)]
         allow_lan: bool,
         mode: String,
         #[serde(rename = "log-level")]
         log_level: String,
         #[serde(rename = "external-controller")]
         external_controller: String,
+        #[serde(default)]
         secret: String,
         proxies: Proxies,
         #[serde(rename = "proxy-groups")]
@@ -201,8 +209,8 @@ mod remote_configure {
         pub fn optimize(&mut self) -> &mut Self {
             let mut v = vec![];
             for element in &self.proxies.0 {
-                if element.password().is_empty() {
-                    v.push(element.name())
+                if let Some(name) = Proxy::is_empty_password(element.clone()) {
+                    v.push(name);
                 }
             }
             for element in &mut self.proxy_groups.0 {
@@ -218,6 +226,14 @@ mod remote_configure {
             info!("Remove {} empty password elements.", v.len());
             self
         }
+    }
+
+    fn default_redir_port() -> u16 {
+        7892
+    }
+
+    fn default_socks_port() -> u16 {
+        7891
     }
 }
 
@@ -504,7 +520,7 @@ use serde_derive::{Deserialize, Serialize};
 pub use configure::Configure;
 pub use http_configure::HttpServerConfigure;
 pub use keyword::Keyword;
-pub use proxies::Proxies;
+pub use proxies::{Proxies, Proxy};
 pub use proxy_groups::{ProxyGroup, ProxyGroups};
 pub use remote_configure::RemoteConfigure;
 pub use rules::Rules;
