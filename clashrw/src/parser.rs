@@ -107,8 +107,13 @@ mod proxy_groups {
             }
         }
 
-        pub fn insert_to_head(&mut self, proxy: String) -> &mut Self {
-            self.proxies.insert(0, proxy);
+        /*pub fn insert_to_head(&mut self, proxy: String) -> &mut Self {
+            self.insert(0, proxy);
+            self
+        }*/
+
+        pub fn insert(&mut self, index: usize, proxy: String) -> &mut Self {
+            self.proxies.insert(index, proxy);
             self
         }
 
@@ -172,6 +177,7 @@ mod remote_configure {
 
     #[derive(Clone, Debug, Deserialize, Serialize)]
     pub struct RemoteConfigure {
+        #[serde(default = "default_port")]
         port: u16,
         #[serde(rename = "socks-port", default = "default_socks_port")]
         socks_port: u16,
@@ -226,6 +232,10 @@ mod remote_configure {
             info!("Remove {} empty password elements.", v.len());
             self
         }
+    }
+
+    fn default_port() -> u16 {
+        7890
     }
 
     fn default_redir_port() -> u16 {

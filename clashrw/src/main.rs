@@ -90,8 +90,8 @@ fn apply_change(
         .map(|element| {
             let mut ret = element.clone();
 
-            if element.group_type().eq("select") && element.proxies().len() > 2 {
-                ret.insert_to_head(DEFAULT_FORCE_PROXY_OR_DIRECT_NAME.to_string());
+            if element.group_type().eq("select") && element.proxies().len() > 4 {
+                ret.insert(1, DEFAULT_FORCE_PROXY_OR_DIRECT_NAME.to_string());
             }
             ret
         })
@@ -194,7 +194,7 @@ async fn async_main(
         _ = async {
             tokio::signal::ctrl_c().await.unwrap();
         } => {
-            warn!("Force exit from file reloader!");
+            warn!("Force exit from file reload-er!");
         }
         ret = file_reloader => {
             ret?;
