@@ -73,7 +73,8 @@ mod cache_ {
             .headers()
             .get("subscription-userinfo")
             .map(|v| v.to_str().unwrap_or_default().to_string())
-            .unwrap_or_else(String::new);
+            .unwrap_or_default();
+
         let txt = ret
             .text()
             .await

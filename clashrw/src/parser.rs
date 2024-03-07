@@ -330,8 +330,8 @@ mod http_configure {
 }
 
 mod upstream {
-
     use super::Deserialize;
+    use crate::parser::share_config::OverrideableValue;
     //use std::collections::HashMap;
 
     #[derive(Clone, Debug, Deserialize)]
@@ -339,6 +339,8 @@ mod upstream {
         sub_id: String,
         upstream: String,
         raw: Option<String>,
+        #[serde(rename = "override")]
+        sub_override: Option<OverrideableValue>,
     }
 
     impl UpStream {
@@ -350,6 +352,10 @@ mod upstream {
         }
         pub fn raw(&self) -> Option<&String> {
             self.raw.as_ref()
+        }
+
+        pub fn sub_override(&self) -> Option<OverrideableValue> {
+            self.sub_override
         }
     }
 }
@@ -416,6 +422,7 @@ mod share_config {
     use super::{Keyword, Proxies, Rules};
     use crate::parser::{Configure, UpStream};
     use log::{debug, error, info};
+    use serde_derive::Deserialize;
     use std::collections::HashMap;
     use std::sync::Arc;
     use tap::TapFallible;
@@ -427,9 +434,58 @@ mod share_config {
         Terminate,
     }
 
+    #[derive(Clone, Copy, Debug, Deserialize)]
+    pub struct OverrideableValue {
+        expire: Option<u64>,
+        total: Option<u64>,
+        download: Option<u64>,
+        upload: Option<u64>,
+    }
+
+    impl OverrideableValue {
+        pub fn rewrite(&self, input: String) -> String {
+            if input.is_empty() {
+                return input;
+            }
+            if input.contains(';') {
+                let mut v = Vec::new();
+                for slice in input.split(';').map(|s| s.trim()) {
+                    if !slice.contains("=") {
+                        v.push(slice.to_string());
+                        continue;
+                    }
+                    let (key, value) = slice.split_once('=').unwrap();
+                    v.push(match key {
+                        "upload" => Self::check_and_push(key, self.upload, value),
+                        "download" => Self::check_and_push(key, self.download, value),
+                        "total" => Self::check_and_push(key, self.total, value),
+                        "expire" => Self::check_and_push(key, self.expire, value),
+                        _ => slice.to_string(),
+                    });
+                }
+                return v.join(";");
+            }
+            input
+        }
+
+        fn check_and_push(key: &str, value: Option<u64>, origin: &str) -> String {
+            format!(
+                "{}={}",
+                key,
+                if let Some(value) = value {
+                    value.to_string()
+                } else {
+                    origin.to_string()
+                }
+            )
+        }
+    }
+
+    #[derive(Clone, Debug)]
     pub struct UrlConfig {
         upstream: String,
         raw: Option<String>,
+        sub_override: Option<OverrideableValue>,
     }
 
     impl UrlConfig {
@@ -439,14 +495,29 @@ mod share_config {
         pub fn raw(&self) -> Option<&String> {
             self.raw.as_ref()
         }
-        pub fn new(upstream: String, raw: Option<String>) -> Self {
-            Self { upstream, raw }
+        pub fn new(
+            upstream: String,
+            raw: Option<String>,
+            sub_override: Option<OverrideableValue>,
+        ) -> Self {
+            Self {
+                upstream,
+                raw,
+                sub_override,
+            }
+        }
+        pub fn sub_override(&self) -> Option<OverrideableValue> {
+            self.sub_override
         }
     }
 
     impl From<&UpStream> for UrlConfig {
         fn from(value: &UpStream) -> Self {
-            Self::new(value.upstream().to_string(), value.raw().cloned())
+            Self::new(
+                value.upstream().to_string(),
+                value.raw().cloned(),
+                value.sub_override(),
+            )
         }
     }
 

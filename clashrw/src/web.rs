@@ -93,6 +93,12 @@ pub mod v2 {
         )
         .await?;
 
+        let remote_status = if let Some(rewrite_config) = mapper.sub_override() {
+            rewrite_config.rewrite(remote_status)
+        } else {
+            remote_status
+        };
+
         let ret = if !method.eq("raw") {
             let ret = apply_change(parse_remote_configure(&content)?, share_config)
                 .tap_err(|e| error!("Apply change error: {:?}", e))?;
