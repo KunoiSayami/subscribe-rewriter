@@ -32,7 +32,7 @@ mod file_cache {
                 .tap_err(|e| error!("[Can be safely ignored] Serialize cache_ error: {:?}", e))
             {
                 redis_conn
-                    .set_ex::<_, String, i64>(&redis_key, s, CACHE_TIME as u64)
+                    .set_ex::<_, String, String>(&redis_key, s, CACHE_TIME as u64)
                     .await
                     .tap_err(|e| error!("[Can be safely ignored] Write to redis error: {:?}", e))
                     .ok();
