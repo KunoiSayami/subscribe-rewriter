@@ -331,7 +331,7 @@ mod http_configure {
 
 mod upstream {
     use super::Deserialize;
-    use crate::parser::share_config::OverrideableValue;
+    use crate::parser::share_config::OverridableValue;
     //use std::collections::HashMap;
 
     #[derive(Clone, Debug, Deserialize)]
@@ -340,7 +340,7 @@ mod upstream {
         upstream: String,
         raw: Option<String>,
         #[serde(rename = "override")]
-        sub_override: Option<OverrideableValue>,
+        sub_override: Option<OverridableValue>,
     }
 
     impl UpStream {
@@ -354,7 +354,7 @@ mod upstream {
             self.raw.as_ref()
         }
 
-        pub fn sub_override(&self) -> Option<OverrideableValue> {
+        pub fn sub_override(&self) -> Option<OverridableValue> {
             self.sub_override
         }
     }
@@ -422,10 +422,9 @@ mod share_config {
     use super::{Keyword, Proxies, Rules};
     use crate::parser::{Configure, UpStream};
     use log::{debug, error, info};
-    use serde_derive::Deserialize;
+    use serde::Deserialize;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tap::TapFallible;
     use tokio::sync::RwLock;
 
     #[derive(Clone, Debug)]
@@ -435,14 +434,14 @@ mod share_config {
     }
 
     #[derive(Clone, Copy, Debug, Deserialize)]
-    pub struct OverrideableValue {
+    pub struct OverridableValue {
         expire: Option<u64>,
         total: Option<u64>,
         download: Option<u64>,
         upload: Option<u64>,
     }
 
-    impl OverrideableValue {
+    impl OverridableValue {
         pub fn rewrite(&self, input: String) -> String {
             if input.is_empty() {
                 return input;
@@ -485,7 +484,7 @@ mod share_config {
     pub struct UrlConfig {
         upstream: String,
         raw: Option<String>,
-        sub_override: Option<OverrideableValue>,
+        sub_override: Option<OverridableValue>,
     }
 
     impl UrlConfig {
@@ -498,7 +497,7 @@ mod share_config {
         pub fn new(
             upstream: String,
             raw: Option<String>,
-            sub_override: Option<OverrideableValue>,
+            sub_override: Option<OverridableValue>,
         ) -> Self {
             Self {
                 upstream,
@@ -506,7 +505,7 @@ mod share_config {
                 sub_override,
             }
         }
-        pub fn sub_override(&self) -> Option<OverrideableValue> {
+        pub fn sub_override(&self) -> Option<OverridableValue> {
             self.sub_override
         }
     }
@@ -532,8 +531,10 @@ mod share_config {
     }
 
     impl ShareConfig {
-        pub async fn get_redis_connection(&self) -> anyhow::Result<redis::aio::Connection> {
-            Ok(self.redis_client.get_async_connection().await?)
+        pub async fn get_redis_connection(
+            &self,
+        ) -> anyhow::Result<redis::aio::MultiplexedConnection> {
+            Ok(self.redis_client.get_multiplexed_async_connection().await?)
         }
         pub fn search_url(&self, key: &str) -> Option<&UrlConfig> {
             self.upstream.get(key)
@@ -590,7 +591,7 @@ mod share_config {
                         let mut cfg = configure_file.write().await;
                         if let Some(new_cfg) = tokio::fs::read_to_string(&configure_path)
                             .await
-                            .tap_err(|e| {
+                            .inspect_err(|e| {
                                 error!(
                                     "[Can be safely ignored] Unable to read configure file: {e:?}"
                                 )
@@ -598,7 +599,7 @@ mod share_config {
                             .ok()
                             .and_then(|s| {
                                 serde_yaml::from_str::<Configure>(s.as_str())
-                                    .tap_err(|e| {
+                                    .inspect_err(|e| {
                                         error!(
                                     "[Can be safely ignored] Unable to parse local configure: {e:?}"
                                 )
@@ -621,7 +622,7 @@ mod share_config {
     }
 }
 
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
 pub use configure::Configure;
 pub use http_configure::HttpServerConfigure;

@@ -13,11 +13,10 @@ use axum::http::StatusCode;
 use axum::{Extension, Json, Router};
 use clap::{arg, command};
 use log::{debug, info, warn, LevelFilter};
-use once_cell::sync::{Lazy, OnceCell};
 use serde_json::json;
 use std::io::Write;
 use std::string::ToString;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, OnceLock};
 use tokio::sync::mpsc;
 use tokio::sync::{RwLock, RwLockReadGuard};
 use tower::ServiceBuilder;
@@ -31,13 +30,13 @@ const DEFAULT_FORCE_PROXY_OR_DIRECT_NAME: &str = "Force proxy or Direct";
 const DIRECT_NAME: &str = "DIRECT";
 
 const DEFAULT_URL_TEST_INTERVAL: u64 = 600;
-static DEFAULT_URL_TEST_INTERVAL_STR: Lazy<String> =
-    Lazy::new(|| DEFAULT_URL_TEST_INTERVAL.to_string());
+static DEFAULT_URL_TEST_INTERVAL_STR: LazyLock<String> =
+    LazyLock::new(|| DEFAULT_URL_TEST_INTERVAL.to_string());
 const DEFAULT_SUB_PREFIX: &str = "sub";
 
-static DISABLE_CACHE: OnceCell<bool> = OnceCell::new();
-static URL_TEST_INTERVAL: OnceCell<u64> = OnceCell::new();
-static SUB_PREFIX: OnceCell<String> = OnceCell::new();
+static DISABLE_CACHE: OnceLock<bool> = OnceLock::new();
+static URL_TEST_INTERVAL: OnceLock<u64> = OnceLock::new();
+static SUB_PREFIX: OnceLock<String> = OnceLock::new();
 
 pub fn get_name(value: &serde_yaml::Value) -> Option<String> {
     if let serde_yaml::Value::Mapping(map) = value {

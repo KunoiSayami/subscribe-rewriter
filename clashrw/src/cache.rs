@@ -2,8 +2,7 @@ mod file_cache {
     use crate::cache::CACHE_TIME;
     use log::error;
     use redis::AsyncCommands;
-    use serde_derive::{Deserialize, Serialize};
-    use tap::TapFallible;
+    use serde::{Deserialize, Serialize};
 
     #[derive(Clone, Debug, Deserialize, Serialize)]
     pub struct FileCache {
@@ -26,15 +25,15 @@ mod file_cache {
         pub async fn write_to_redis(
             &self,
             redis_key: String,
-            mut redis_conn: redis::aio::Connection,
+            mut redis_conn: redis::aio::MultiplexedConnection,
         ) {
             if let Ok(s) = serde_yaml::to_string(self)
-                .tap_err(|e| error!("[Can be safely ignored] Serialize cache_ error: {e:?}"))
+                .inspect_err(|e| error!("[Can be safely ignored] Serialize cache_ error: {e:?}"))
             {
                 redis_conn
                     .set_ex::<_, String, String>(&redis_key, s, CACHE_TIME as u64)
                     .await
-                    .tap_err(|e| error!("[Can be safely ignored] Write to redis error: {e:?}"))
+                    .inspect_err(|e| error!("[Can be safely ignored] Write to redis error: {e:?}"))
                     .ok();
             }
         }
@@ -53,7 +52,6 @@ mod cache_ {
     use log::{debug, error, trace, warn};
     use redis::AsyncCommands;
     use std::time::Duration;
-    use tap::TapFallible;
 
     pub const CACHE_TIME: usize = 600;
 
@@ -97,7 +95,7 @@ mod cache_ {
 
     fn read_cache(content: Option<String>) -> Option<FileCache> {
         serde_yaml::from_str(content?.as_str())
-            .tap_err(|e| {
+            .inspect_err(|e| {
                 warn!("[Can be safely ignored] Got error while serialize cache_ yaml: {e:?}")
             })
             .ok()
@@ -106,11 +104,11 @@ mod cache_ {
     pub async fn read_or_fetch(
         url: &str,
         redis_key: String,
-        mut redis_conn: anyhow::Result<redis::aio::Connection>,
+        mut redis_conn: anyhow::Result<redis::aio::MultiplexedConnection>,
     ) -> Result<(String, String), ErrorCode> {
         if let Ok(ref mut redis_conn) = redis_conn {
             if !DISABLE_CACHE.get().unwrap() {
-                let ret = redis_conn.exists(&redis_key).await.tap_err(|e| {
+                let ret = redis_conn.exists(&redis_key).await.inspect_err(|e| {
                     warn!("[Can be safely ignored] Got error in query key {redis_key:?}: {e:?}")
                 });
                 if let Ok(ret) = ret {
@@ -118,7 +116,7 @@ mod cache_ {
                         let cache = redis_conn
                             .get::<_, Option<String>>(&redis_key)
                             .await
-                            .tap_err(|e| {
+                            .inspect_err(|e| {
                                 warn!(
                                     "[Can be safely ignored] Got error in fetch key {redis_key:?}: {e:?}"
                                 )

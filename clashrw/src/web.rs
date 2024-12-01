@@ -8,9 +8,8 @@ pub mod v2 {
     use axum::response::IntoResponse;
     use axum::Extension;
     use log::error;
-    use serde_derive::Deserialize;
+    use serde::Deserialize;
     use std::sync::Arc;
-    use tap::TapFallible;
     use tokio::sync::RwLock;
 
     #[derive(Deserialize)]
@@ -101,7 +100,7 @@ pub mod v2 {
 
         let ret = if !method.eq("raw") {
             let ret = apply_change(parse_remote_configure(&content)?, share_config)
-                .tap_err(|e| error!("Apply change error: {e:?}"))?;
+                .inspect_err(|e| error!("Apply change error: {e:?}"))?;
 
             serde_yaml::to_string(&ret).map_err(|e| error!("Serialize yaml failed: {e:?}"))?
         } else {
