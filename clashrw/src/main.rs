@@ -137,10 +137,10 @@ async fn async_main(
     let local_file: Configure = serde_yaml::from_str(
         tokio::fs::read_to_string(&configure_path)
             .await
-            .map_err(|e| anyhow!("Got error while read local configure: {:?}", e))?
+            .map_err(|e| anyhow!("Got error while read local configure: {e:?}"))?
             .as_str(),
     )
-    .map_err(|e| anyhow!("Got error while parse local configure: {:?}", e))?;
+    .map_err(|e| anyhow!("Got error while parse local configure: {e:?}"))?;
 
     let redis_conn = redis::Client::open(local_file.http().redis_address())?;
     let bind = format!(

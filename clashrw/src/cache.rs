@@ -29,12 +29,12 @@ mod file_cache {
             mut redis_conn: redis::aio::Connection,
         ) {
             if let Ok(s) = serde_yaml::to_string(self)
-                .tap_err(|e| error!("[Can be safely ignored] Serialize cache_ error: {:?}", e))
+                .tap_err(|e| error!("[Can be safely ignored] Serialize cache_ error: {e:?}"))
             {
                 redis_conn
                     .set_ex::<_, String, String>(&redis_key, s, CACHE_TIME as u64)
                     .await
-                    .tap_err(|e| error!("[Can be safely ignored] Write to redis error: {:?}", e))
+                    .tap_err(|e| error!("[Can be safely ignored] Write to redis error: {e:?}"))
                     .ok();
             }
         }
@@ -50,7 +50,7 @@ mod cache_ {
     use crate::web::ErrorCode;
     use crate::DISABLE_CACHE;
     use anyhow::anyhow;
-    use log::{debug, error, warn};
+    use log::{debug, error, trace, warn};
     use redis::AsyncCommands;
     use std::time::Duration;
     use tap::TapFallible;
@@ -67,7 +67,7 @@ mod cache_ {
             .get(url)
             .send()
             .await
-            .map_err(|e| anyhow!("Get error while fetch remote file: {:?}", e))?;
+            .map_err(|e| anyhow!("Get error while fetch remote file: {e:?}"))?;
 
         let header = ret
             .headers()
@@ -78,14 +78,15 @@ mod cache_ {
         let txt = ret
             .text()
             .await
-            .map_err(|e| anyhow!("Get error while obtain text: {:?}", e))?;
+            .map_err(|e| anyhow!("Get error while obtain text: {e:?}"))?;
 
         Ok((txt, header))
     }
 
     pub fn parse_remote_configure(txt: &str) -> Result<RemoteConfigure, ErrorCode> {
         let mut ret = serde_yaml::from_str::<RemoteConfigure>(txt).map_err(|e| {
-            error!("Got error while decode remote file: {:?}", e);
+            error!("Got error while decode remote file: {e:?}");
+            trace!("Remote file: {txt:?}");
             ErrorCode::NotAcceptable
         })?;
 
@@ -97,10 +98,7 @@ mod cache_ {
     fn read_cache(content: Option<String>) -> Option<FileCache> {
         serde_yaml::from_str(content?.as_str())
             .tap_err(|e| {
-                warn!(
-                    "[Can be safely ignored] Got error while serialize cache_ yaml: {:?}",
-                    e
-                )
+                warn!("[Can be safely ignored] Got error while serialize cache_ yaml: {e:?}")
             })
             .ok()
     }
@@ -113,10 +111,7 @@ mod cache_ {
         if let Ok(ref mut redis_conn) = redis_conn {
             if !DISABLE_CACHE.get().unwrap() {
                 let ret = redis_conn.exists(&redis_key).await.tap_err(|e| {
-                    warn!(
-                        "[Can be safely ignored] Got error in query key {:?}: {:?}",
-                        redis_key, e
-                    )
+                    warn!("[Can be safely ignored] Got error in query key {redis_key:?}: {e:?}")
                 });
                 if let Ok(ret) = ret {
                     if ret {
@@ -125,27 +120,24 @@ mod cache_ {
                             .await
                             .tap_err(|e| {
                                 warn!(
-                                    "[Can be safely ignored] Got error in fetch key {:?}: {:?}",
-                                    redis_key, e
+                                    "[Can be safely ignored] Got error in fetch key {redis_key:?}: {e:?}"
                                 )
                             })
-                            .ok();
-                        if let Some(cache) = read_cache(cache.flatten()) {
-                            debug!("Cache: Read from cache_");
+                            .ok().flatten();
+                        if let Some(cache) = read_cache(cache) {
+                            debug!("Cache: Read from cache");
+                            trace!("Cache: Content => {cache:?}");
                             return Ok((cache.content().to_string(), cache.remote_status()));
                         }
                     }
                 }
             }
         } else if let Err(ref e) = redis_conn {
-            warn!(
-                "[Can be safely ignored] can't get redis connection: {:?}",
-                e
-            );
+            warn!("[Can be safely ignored] can't get redis connection: {e:?}");
         }
 
         let cache = FileCache::new(fetch_remote_file(url).await.map_err(|e| {
-            error!("Get error while fetch remote file: {:?}", e);
+            error!("Get error while fetch remote file: {e:?}");
             ErrorCode::RequestTimeout
         })?);
 

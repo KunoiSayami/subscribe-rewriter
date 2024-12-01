@@ -101,9 +101,9 @@ pub mod v2 {
 
         let ret = if !method.eq("raw") {
             let ret = apply_change(parse_remote_configure(&content)?, share_config)
-                .tap_err(|e| error!("Apply change error: {:?}", e))?;
+                .tap_err(|e| error!("Apply change error: {e:?}"))?;
 
-            serde_yaml::to_string(&ret).map_err(|e| error!("Serialize yaml failed: {:?}", e))?
+            serde_yaml::to_string(&ret).map_err(|e| error!("Serialize yaml failed: {e:?}"))?
         } else {
             content
         };
@@ -115,7 +115,7 @@ pub mod v2 {
         }
         .header(
             "content-disposition",
-            format!("attachment; filename=Clash_{}.yaml", sub_id),
+            format!("attachment; filename=Clash_{sub_id}.yaml"),
         )
         .body(ret)
         .unwrap();

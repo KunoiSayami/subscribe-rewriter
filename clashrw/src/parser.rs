@@ -592,8 +592,7 @@ mod share_config {
                             .await
                             .tap_err(|e| {
                                 error!(
-                                    "[Can be safely ignored] Unable to read configure file: {:?}",
-                                    e
+                                    "[Can be safely ignored] Unable to read configure file: {e:?}"
                                 )
                             })
                             .ok()
@@ -601,8 +600,7 @@ mod share_config {
                                 serde_yaml::from_str::<Configure>(s.as_str())
                                     .tap_err(|e| {
                                         error!(
-                                    "[Can be safely ignored] Unable to parse local configure: {:?}",
-                                    e
+                                    "[Can be safely ignored] Unable to parse local configure: {e:?}"
                                 )
                                     })
                                     .ok()
