@@ -45,9 +45,9 @@ mod file_cache {
 
 mod cache_ {
     use super::FileCache;
+    use crate::DISABLE_CACHE;
     use crate::parser::RemoteConfigure;
     use crate::web::ErrorCode;
-    use crate::DISABLE_CACHE;
     use anyhow::anyhow;
     use log::{debug, error, trace, warn};
     use redis::AsyncCommands;
@@ -139,12 +139,14 @@ mod cache_ {
             ErrorCode::RequestTimeout
         })?);
 
-        if let Ok(redis_conn) = redis_conn {
+        if let Ok(redis_conn) = redis_conn
+            && parse_remote_configure(cache.content()).is_ok()
+        {
             cache.write_to_redis(redis_key, redis_conn).await;
         }
         Ok((cache.content().to_string(), cache.remote_status()))
     }
 }
 
-pub use cache_::{parse_remote_configure, read_or_fetch, CACHE_TIME};
+pub use cache_::{CACHE_TIME, parse_remote_configure, read_or_fetch};
 pub use file_cache::FileCache;

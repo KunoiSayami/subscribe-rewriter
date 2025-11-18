@@ -90,7 +90,7 @@ mod proxy_groups {
         pub fn new_select(name: String, proxies: Vec<String>) -> Self {
             Self {
                 name,
-                type_: "select".to_string(),
+                type_: "select".into(),
                 proxies,
                 ..Default::default()
             }
@@ -100,7 +100,7 @@ mod proxy_groups {
         pub fn new_url_test(name: String, proxies: Vec<String>, url: String) -> Self {
             Self {
                 name,
-                type_: "url-test".to_string(),
+                type_: "url-test".into(),
                 proxies,
                 url: Some(url),
                 interval: Some(600),
@@ -125,7 +125,7 @@ mod proxy_groups {
                     true
                 }
             });
-            self.proxies.push(DIRECT_NAME.to_string());
+            self.proxies.push(DIRECT_NAME.into());
             self
         }
     }
@@ -213,12 +213,18 @@ mod remote_configure {
         }
 
         pub fn optimize(&mut self) -> &mut Self {
-            let mut v = vec![];
-            for element in &self.proxies.0 {
+            let v = self
+                .proxies
+                .0
+                .iter()
+                .filter_map(|x| Proxy::is_empty_password(x.clone()))
+                .collect::<Vec<_>>();
+
+            /* for element in &self.proxies.0 {
                 if let Some(name) = Proxy::is_empty_password(element.clone()) {
                     v.push(name);
                 }
-            }
+            } */
             for element in &mut self.proxy_groups.0 {
                 for item in &v {
                     let ret = element.proxies().iter().position(|x| x.eq(item));
@@ -321,9 +327,9 @@ mod http_configure {
     impl Default for HttpServerConfigure {
         fn default() -> Self {
             Self {
-                address: "127.0.0.1".to_string(),
+                address: "127.0.0.1".into(),
                 port: 23365,
-                redis_address: DEFAULT_REDIS_SERVER.to_string(),
+                redis_address: DEFAULT_REDIS_SERVER.into(),
             }
         }
     }
@@ -366,7 +372,7 @@ mod configure {
     //use std::collections::HashMap;
 
     pub fn default_test_url() -> String {
-        "http://www.gstatic.com/generate_204".to_string()
+        "http://www.gstatic.com/generate_204".into()
     }
 
     #[derive(Clone, Debug, Deserialize)]
