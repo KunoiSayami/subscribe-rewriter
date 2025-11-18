@@ -5,18 +5,18 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1"
-axum = "^0.7"
-axum-server = "^0.7"
-clap = { version = "4.0.32", features = ["cargo"] }
+axum = "0.8"
+axum-server = "0.7"
+clap = { version = "4", features = ["cargo"] }
 env_logger = "^0.11"
-hyper = { version = "^1.1", features = ["http2"] }
+hyper = { version = "1", features = ["http2"] }
 log = { version = "0.4", features = [
     "max_level_trace",
     "release_max_level_debug",
 ] }
-notify = "^7.0"
+notify = "8"
 oneshot = "0.1.5"
-redis = { version = "^0.27", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "0.32", features = ["tokio-comp", "connection-manager"] }
 reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls-native-roots",
     "socks",
