@@ -2,11 +2,11 @@ pub mod v2 {
     use crate::apply_change;
     use crate::cache::{parse_remote_configure, read_or_fetch};
     use crate::parser::ShareConfig;
-    use anyhow::Error;
+    use anyhow::{Context, Error};
+    use axum::Extension;
     use axum::extract::{Path, Query};
     use axum::http::Response;
     use axum::response::IntoResponse;
-    use axum::Extension;
     use log::error;
     use serde::Deserialize;
     use std::sync::Arc;
@@ -77,7 +77,7 @@ pub mod v2 {
 
         let remote_url = if method.eq("raw") {
             if let Some(s) = mapper.raw() {
-                s.as_str()
+                s
             } else {
                 mapper.upstream()
             }
@@ -102,7 +102,7 @@ pub mod v2 {
             let ret = apply_change(parse_remote_configure(&content)?, share_config)
                 .inspect_err(|e| error!("Apply change error: {e:?}"))?;
 
-            serde_yaml::to_string(&ret).map_err(|e| error!("Serialize yaml failed: {e:?}"))?
+            serde_yaml::to_string(&ret).context("Serialize yaml failed")?
         } else {
             content
         };
@@ -141,6 +141,6 @@ pub mod v2 {
     }
 }
 
-pub use current::get;
 pub use current::ErrorCode;
+pub use current::get;
 pub use v2 as current;

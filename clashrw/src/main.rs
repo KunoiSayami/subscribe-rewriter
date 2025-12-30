@@ -8,11 +8,11 @@ use crate::parser::{
     Configure, Proxy, ProxyGroup, RemoteConfigure, ShareConfig, UpdateConfigureEvent,
 };
 use crate::web::get;
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use axum::http::StatusCode;
 use axum::{Extension, Json, Router};
 use clap::{arg, command};
-use log::{debug, info, warn, LevelFilter};
+use log::{LevelFilter, debug, info, warn};
 use serde_json::json;
 use std::io::Write;
 use std::string::ToString;
@@ -139,7 +139,7 @@ async fn async_main(
             .map_err(|e| anyhow!("Got error while read local configure: {e:?}"))?
             .as_str(),
     )
-    .map_err(|e| anyhow!("Got error while parse local configure: {e:?}"))?;
+    .context("Parse configure")?;
 
     let redis_conn = redis::Client::open(local_file.http().redis_address())?;
     let bind = format!(

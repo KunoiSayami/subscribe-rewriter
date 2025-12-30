@@ -238,6 +238,10 @@ mod remote_configure {
             info!("Remove {} empty password elements.", v.len());
             self
         }
+
+        pub fn proxies_len(&self) -> usize {
+            self.proxies.0.len()
+        }
     }
 
     fn default_port() -> u16 {
@@ -497,8 +501,8 @@ mod share_config {
         pub fn upstream(&self) -> &str {
             &self.upstream
         }
-        pub fn raw(&self) -> Option<&String> {
-            self.raw.as_ref()
+        pub fn raw(&self) -> Option<&str> {
+            self.raw.as_deref()
         }
         pub fn new(
             upstream: String,

@@ -140,7 +140,7 @@ mod cache_ {
         })?);
 
         if let Ok(redis_conn) = redis_conn
-            && parse_remote_configure(cache.content()).is_ok()
+            && parse_remote_configure(cache.content()).is_ok_and(|x| x.proxies_len() > 0)
         {
             cache.write_to_redis(redis_key, redis_conn).await;
         }
