@@ -170,7 +170,7 @@ async fn async_main(
         .layer(Extension(arc_configure.clone()))
         .layer(ServiceBuilder::new().layer(TraceLayer::new_for_http()));
 
-    let server_handler = axum_server::Handle::new();
+    let server_handler = axum_server::Handle::<std::net::SocketAddr>::new();
     let server = tokio::spawn(
         axum_server::bind(bind.parse().unwrap())
             .handle(server_handler.clone())
