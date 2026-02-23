@@ -18,9 +18,21 @@ mod v1 {
             stop_signal_channel: oneshot::Receiver<bool>,
             sender: tokio::sync::mpsc::Sender<UpdateConfigureEvent>,
         ) -> Option<()> {
+            let path = PathBuf::from(&file)
+                .canonicalize()
+                .inspect_err(|e| {
+                    error!("[Can be safely ignored] Unable to canonicalize path: {e:?}")
+                })
+                .ok()?;
+            let watch_dir = path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."));
+            let file_name = path.file_name()?.to_os_string();
+
             let mut watcher = notify::recommended_watcher(move |res| match res {
                 Ok(event) => {
-                    if Self::decide(event) {
+                    if Self::decide(&file_name, &event) {
                         tokio::runtime::Builder::new_current_thread()
                             .build()
                             .map(|runtime| runtime.block_on(Self::send_event(sender.clone())))
@@ -40,10 +52,8 @@ mod v1 {
             .inspect_err(|e| error!("[Can be safely ignored] Can't start watcher {e:?}"))
             .ok()?;
 
-            let path = PathBuf::from(file);
-
             watcher
-                .watch(&path, RecursiveMode::NonRecursive)
+                .watch(&watch_dir, RecursiveMode::NonRecursive)
                 .inspect_err(|e| error!("[Can be safely ignored] Unable to watch file: {e:?}"))
                 .ok()?;
 
@@ -55,7 +65,7 @@ mod v1 {
                 .ok();
 
             watcher
-                .unwatch(&path)
+                .unwatch(&watch_dir)
                 .inspect_err(|e| error!("[Can be safely ignored] Unable to unwatch file: {e:?}"))
                 .ok()?;
 
@@ -63,11 +73,17 @@ mod v1 {
             Some(())
         }
 
-        fn decide(event: Event) -> bool {
-            if let notify::EventKind::Access(notify::event::AccessKind::Close(
-                notify::event::AccessMode::Write,
-            )) = event.kind
-            {
+        fn decide(file_name: &std::ffi::OsStr, event: &Event) -> bool {
+            let path_matches = event.paths.iter().any(|p| p.file_name() == Some(file_name));
+            if !path_matches {
+                return false;
+            }
+            if matches!(
+                event.kind,
+                notify::EventKind::Access(notify::event::AccessKind::Close(
+                    notify::event::AccessMode::Write,
+                )) | notify::EventKind::Create(_)
+            ) {
                 return true;
             }
             event.need_rescan()
