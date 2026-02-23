@@ -41,6 +41,10 @@ mod proxies {
             self.0 = v;
             self
         }
+
+        pub(crate) fn len(&self) -> usize {
+            self.0.len()
+        }
     }
 }
 
@@ -169,6 +173,10 @@ mod rules {
 
         pub fn get_element(&self) -> Vec<String> {
             self.0.clone()
+        }
+
+        pub(crate) fn len(&self) -> usize {
+            self.0.len()
         }
     }
 }
@@ -563,7 +571,7 @@ mod share_config {
             self.upstream.get(key)
         }
         pub fn new(local_configure: Configure, redis_client: redis::Client) -> Self {
-            Self {
+            let ret = Self {
                 upstream: Self::upstreams_into_hashmap(local_configure.upstream()),
                 rules: local_configure.rules().clone(),
                 proxies: local_configure.proxies().clone(),
@@ -572,7 +580,9 @@ mod share_config {
                 groups: local_configure.proxy_groups().clone(),
                 test_url: local_configure.test_url(),
                 manual_insert_proxies: local_configure.need_added_proxy(),
-            }
+            };
+            log::debug!("{}", ret.briefing());
+            ret
         }
         pub fn rules(&self) -> &Rules {
             &self.rules
@@ -588,12 +598,9 @@ mod share_config {
             self.test_url.clone()
         }*/
         pub fn upstreams_into_hashmap(v: &Vec<UpStream>) -> HashMap<String, UrlConfig> {
-            let mut m = HashMap::new();
-            for map in v {
-                m.insert(map.sub_id().to_string(), UrlConfig::from(map));
-            }
-            debug!("Find {} subscriptions", m.len());
-            m
+            v.into_iter()
+                .map(|x| (x.sub_id().to_string(), UrlConfig::from(x)))
+                .collect()
         }
 
         pub fn update(&mut self, local_configure: Configure) {
@@ -604,6 +611,17 @@ mod share_config {
             self.groups = local_configure.proxy_groups().clone();
             self.test_url = local_configure.test_url();
             self.manual_insert_proxies = local_configure.need_added_proxy();
+            log::debug!("{}", self.briefing());
+        }
+
+        pub fn briefing(&self) -> String {
+            format!(
+                "Find {} subscriptions, {} rules, {} proxies, {} groups",
+                self.upstream.len(),
+                self.rules.len(),
+                self.proxies.len(),
+                self.groups.len(),
+            )
         }
 
         pub async fn configure_file_updater(
