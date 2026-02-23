@@ -128,9 +128,13 @@ mod proxy_groups {
             self.proxies.push(DIRECT_NAME.into());
             self
         }
+
+        pub fn proxies_mut(&mut self) -> &mut Vec<String> {
+            &mut self.proxies
+        }
     }
 
-    #[derive(Clone, Debug, Deserialize, Serialize)]
+    #[derive(Clone, Debug, Deserialize, Serialize, Default)]
     pub struct ProxyGroups(pub Vec<ProxyGroup>);
 
     impl ProxyGroups {
@@ -371,11 +375,13 @@ mod upstream {
 }
 
 mod configure {
+    use crate::parser::ProxyGroup;
+
     use super::Deserialize;
     use super::{HttpServerConfigure, Keyword, Proxies, Rules, UpStream};
     //use std::collections::HashMap;
 
-    pub fn default_test_url() -> String {
+    fn default_test_url() -> String {
         "http://www.gstatic.com/generate_204".into()
     }
 
@@ -391,6 +397,8 @@ mod configure {
         http: HttpServerConfigure,
         #[serde(default)]
         manual_add_group_name: Vec<String>,
+        #[serde(default, alias = "groups", alias = "proxy-groups")]
+        proxy_groups: Vec<ProxyGroup>,
     }
 
     impl Configure {
@@ -425,12 +433,16 @@ mod configure {
         pub fn need_added_proxy(self) -> Vec<String> {
             self.manual_add_group_name
         }
+
+        pub fn proxy_groups(&self) -> &Vec<ProxyGroup> {
+            &self.proxy_groups
+        }
     }
 }
 
 mod share_config {
     use super::{Keyword, Proxies, Rules};
-    use crate::parser::{Configure, UpStream};
+    use crate::parser::{Configure, ProxyGroup, UpStream};
     use log::{debug, error, info};
     use serde::Deserialize;
     use std::collections::HashMap;
@@ -535,6 +547,7 @@ mod share_config {
         upstream: HashMap<String, UrlConfig>,
         rules: Rules,
         proxies: Proxies,
+        groups: Vec<ProxyGroup>,
         keyword: Keyword,
         test_url: String,
         manual_insert_proxies: Vec<String>,
@@ -556,6 +569,7 @@ mod share_config {
                 proxies: local_configure.proxies().clone(),
                 keyword: local_configure.keyword().clone(),
                 redis_client,
+                groups: local_configure.proxy_groups().clone(),
                 test_url: local_configure.test_url(),
                 manual_insert_proxies: local_configure.need_added_proxy(),
             }
@@ -581,11 +595,13 @@ mod share_config {
             debug!("Find {} subscriptions", m.len());
             m
         }
+
         pub fn update(&mut self, local_configure: Configure) {
             self.upstream = Self::upstreams_into_hashmap(local_configure.upstream());
             self.rules = local_configure.rules().clone();
             self.keyword = local_configure.keyword().clone();
             self.proxies = local_configure.proxies().clone();
+            self.groups = local_configure.proxy_groups().clone();
             self.test_url = local_configure.test_url();
             self.manual_insert_proxies = local_configure.need_added_proxy();
         }
@@ -628,6 +644,10 @@ mod share_config {
         }
         pub fn manual_insert_proxies(&self) -> &Vec<String> {
             &self.manual_insert_proxies
+        }
+
+        pub fn groups(&self) -> &Vec<ProxyGroup> {
+            &self.groups
         }
     }
 }

@@ -68,6 +68,8 @@ fn apply_change(
         local_proxy_name.clone(),
     );
 
+    let mut last_proxies = None;
+
     let proxy_or_direct = ProxyGroup::new_select(DEFAULT_PROXY_OR_DIRECT_NAME.to_string(), {
         let mut v = vec![DEFAULT_FORCE_PROXY_OR_DIRECT_NAME.to_string()];
         v.extend(local_proxy_name);
@@ -79,6 +81,7 @@ fn apply_change(
                 .any(|p| p.name().eq(proxy))
             {
                 v.push(proxy.clone());
+                last_proxies.replace(proxy.clone());
             }
         }
         v
@@ -107,6 +110,32 @@ fn apply_change(
 
     // Add relay to proxy group
     new_proxy_group.extend(real_proxy_group);
+
+    // At least have two configure
+    let last2 = new_proxy_group.len() - 1;
+    let mut replaced_relay = 0;
+    let mut additional_groups = local.groups().clone();
+
+    // Find additional group if there is a relay group with <PlaceHold> need to fill
+    if let Some(ref replace_target) = last_proxies {
+        for group in additional_groups
+            .iter_mut()
+            .filter(|x| x.group_type().eq("relay"))
+        {
+            for proxy in group.proxies_mut() {
+                if proxy == "<PlaceHold>" {
+                    *proxy = replace_target.clone();
+                    replaced_relay += 1;
+                }
+            }
+        }
+    } else {
+        log::warn!("Find <PlaceHold> relay group, but target outbound not found");
+    }
+    new_proxy_group.splice(last2..last2, additional_groups);
+    if replaced_relay > 0 {
+        log::debug!("Replaced {} relay", replaced_relay);
+    }
 
     remote.mut_proxy_groups().set_vec(new_proxy_group);
     let mut new_proxy_pending = local.proxies().get_vec().clone();
@@ -157,7 +186,7 @@ async fn async_main(
 
     let router = Router::new()
         .route(
-            &format!("/{}/:sub_id", SUB_PREFIX.get().unwrap()),
+            &format!("/{}/{{sub_id}}", SUB_PREFIX.get().unwrap()),
             axum::routing::get(get),
         )
         .route(

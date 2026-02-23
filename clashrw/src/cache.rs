@@ -48,7 +48,7 @@ mod cache_ {
     use crate::DISABLE_CACHE;
     use crate::parser::RemoteConfigure;
     use crate::web::ErrorCode;
-    use anyhow::anyhow;
+    use anyhow::Context;
     use log::{debug, error, trace, warn};
     use redis::AsyncCommands;
     use std::time::Duration;
@@ -61,22 +61,16 @@ mod cache_ {
             .build()
             .unwrap();
 
-        let ret = client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| anyhow!("Get error while fetch remote file: {e:?}"))?;
+        let ret = client.get(url).send().await.context("fetch remote file")?;
 
         let header = ret
             .headers()
             .get("subscription-userinfo")
-            .map(|v| v.to_str().unwrap_or_default().to_string())
-            .unwrap_or_default();
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
 
-        let txt = ret
-            .text()
-            .await
-            .map_err(|e| anyhow!("Get error while obtain text: {e:?}"))?;
+        let txt = ret.text().await.context("obtain text")?;
 
         Ok((txt, header))
     }
