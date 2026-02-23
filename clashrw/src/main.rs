@@ -8,7 +8,6 @@ use crate::parser::{
     Configure, Proxy, ProxyGroup, RemoteConfigure, ShareConfig, UpdateConfigureEvent,
 };
 use crate::web::get;
-use anyhow::{Context, anyhow};
 use axum::http::StatusCode;
 use axum::{Extension, Json, Router};
 use clap::{arg, command};
@@ -162,13 +161,7 @@ async fn async_main(
     file_update_sender: mpsc::Sender<UpdateConfigureEvent>,
     file_update_receiver: mpsc::Receiver<UpdateConfigureEvent>,
 ) -> anyhow::Result<()> {
-    let local_file: Configure = serde_yaml::from_str(
-        tokio::fs::read_to_string(&configure_path)
-            .await
-            .map_err(|e| anyhow!("Got error while read local configure: {e:?}"))?
-            .as_str(),
-    )
-    .context("Parse configure")?;
+    let local_file = Configure::load(&configure_path).await?;
 
     let redis_conn = redis::Client::open(local_file.http().redis_address())?;
     let bind = format!(

@@ -8,6 +8,7 @@ A proxy subscription rewriting service for Clash. It fetches remote Clash config
 - **Custom proxy groups** — Define local proxy groups (select, relay, url-test) in the config. Relay groups support a `<PlaceHold>` placeholder that is automatically resolved to an upstream proxy group.
 - **Multi-subscription support** — Maps multiple `sub_id` paths to different upstream URLs, each with optional overrides (e.g. expiry, traffic limits).
 - **Redis caching** — Caches fetched upstream configs in Redis (default TTL: 600s) to reduce redundant requests. Can be disabled with `--nocache`.
+- **External rules** — Import rules from external JSON config files via the `additional_rules` field, with support for domain, domain-suffix, and domain-regex rule types.
 - **Hot reload** — Watches the config file for changes and reloads automatically without restarting the server.
 - **Raw passthrough** — Supports a `?method=raw` query parameter to return the upstream content unmodified (useful for non-Clash clients like Quantumult X).
 - **Subscription-userinfo forwarding** — Preserves and optionally overrides the `subscription-userinfo` header from upstream.
@@ -91,9 +92,32 @@ proxy_groups:
       - <PlaceHold>
       - "My Proxy"
 
+# External rule files (aliases: "additional-rules")
+# Format: "<path_to_json>,<target_proxy_group>"
+additional_rules:
+  - "rules/custom.json,Proxy or Direct"
+
 # Health check URL
 test_url: "http://www.gstatic.com/generate_204"
 ```
+
+### External Rules JSON Format
+
+Files referenced by `additional_rules` use the following JSON structure:
+
+```json
+{
+  "rules": [
+    {
+      "domain": ["example.com"],
+      "domain_suffix": ["example.org"],
+      "domain_regex": [".*\\.example\\.net"]
+    }
+  ]
+}
+```
+
+Each entry is expanded into `DOMAIN`, `DOMAIN-SUFFIX`, and `DOMAIN-REGEX` Clash rules targeting the proxy group specified after the comma in the `additional_rules` value.
 
 ## Building
 

@@ -178,6 +178,11 @@ mod rules {
         pub(crate) fn len(&self) -> usize {
             self.0.len()
         }
+
+        pub(super) fn append(&mut self, mut from: Vec<String>) -> &mut Self {
+            self.0.append(&mut from);
+            self
+        }
     }
 }
 mod remote_configure {
@@ -383,7 +388,12 @@ mod upstream {
 }
 
 mod configure {
+    use std::path::Path;
+
     use crate::parser::ProxyGroup;
+    use crate::parser::external_config::ExternalConfig;
+
+    use anyhow::Context;
 
     use super::Deserialize;
     use super::{HttpServerConfigure, Keyword, Proxies, Rules, UpStream};
@@ -407,6 +417,8 @@ mod configure {
         manual_add_group_name: Vec<String>,
         #[serde(default, alias = "groups", alias = "proxy-groups")]
         proxy_groups: Vec<ProxyGroup>,
+        #[serde(default, alias = "additional-rules")]
+        additional_rules: Vec<String>,
     }
 
     impl Configure {
@@ -444,6 +456,101 @@ mod configure {
 
         pub fn proxy_groups(&self) -> &Vec<ProxyGroup> {
             &self.proxy_groups
+        }
+
+        pub(crate) async fn load<P: AsRef<Path>>(p: P) -> anyhow::Result<Self> {
+            let mut ret = serde_yaml::from_str::<Self>(
+                tokio::fs::read_to_string(p.as_ref())
+                    .await
+                    .context("read local config")?
+                    .as_str(),
+            )
+            .context("Parse configure")?;
+
+            let mut rules_count = 0;
+
+            for (path, target) in ret
+                .additional_rules
+                .iter()
+                .filter_map(|x| x.split_once(','))
+            {
+                let Ok(ext) = ExternalConfig::load(path)
+                    .await
+                    .inspect_err(|e| log::warn!("Load external config {path}: {e:?}"))
+                else {
+                    continue;
+                };
+
+                let t = ext.transform(target);
+                rules_count += t.len();
+
+                ret.rules.append(t);
+            }
+
+            if ret.additional_rules.len() > 0 {
+                log::debug!("Load {rules_count} from external configure");
+            }
+            Ok(ret)
+        }
+    }
+}
+
+mod external_config {
+    use std::path::Path;
+
+    use anyhow::Context;
+    use serde::Deserialize;
+
+    macro_rules! insert_domain {
+        ($head: literal, $array: expr, $t: tt, $v:tt) => {
+            for domain in &$array {
+                $v.push(format!("{}, {}, {}", $head, domain, $t));
+            }
+        };
+    }
+
+    #[derive(Clone, Debug, Deserialize)]
+    pub struct ExternalConfigSub {
+        domain: Vec<String>,
+        domain_suffix: Vec<String>,
+        domain_regex: Vec<String>,
+    }
+
+    impl ExternalConfigSub {
+        pub(crate) fn transform(&self, target: &str) -> Vec<String> {
+            let mut ret = Vec::with_capacity(
+                self.domain.len() + self.domain_suffix.len() + self.domain_regex.len(),
+            );
+
+            insert_domain!("DOMAIN", self.domain, target, ret);
+            insert_domain!("DOMAIN-SUFFIX", self.domain_suffix, target, ret);
+            insert_domain!("DOMAIN-REGEX", self.domain_regex, target, ret);
+            ret
+        }
+    }
+
+    #[derive(Clone, Debug, Deserialize)]
+    pub struct ExternalConfig {
+        rules: Vec<ExternalConfigSub>,
+    }
+
+    impl ExternalConfig {
+        pub(crate) async fn load<P: AsRef<Path>>(p: P) -> anyhow::Result<Self> {
+            serde_json::from_str(
+                tokio::fs::read_to_string(p.as_ref())
+                    .await
+                    .context("read external config")?
+                    .as_str(),
+            )
+            .context("parse external config")
+        }
+
+        pub(crate) fn transform(self, target: &str) -> Vec<String> {
+            self.rules
+                .iter()
+                .map(|x| x.transform(target))
+                .flatten()
+                .collect()
         }
     }
 }
@@ -633,23 +740,12 @@ mod share_config {
                 match event {
                     UpdateConfigureEvent::NeedUpdate => {
                         let mut cfg = configure_file.write().await;
-                        if let Some(new_cfg) = tokio::fs::read_to_string(&configure_path)
+                        if let Some(new_cfg) = Configure::load(&configure_path)
                             .await
                             .inspect_err(|e| {
-                                error!(
-                                    "[Can be safely ignored] Unable to read configure file: {e:?}"
-                                )
+                                error!("[Can be safely ignored] Load configure: {e:?}")
                             })
                             .ok()
-                            .and_then(|s| {
-                                serde_yaml::from_str::<Configure>(s.as_str())
-                                    .inspect_err(|e| {
-                                        error!(
-                                    "[Can be safely ignored] Unable to parse local configure: {e:?}"
-                                )
-                                    })
-                                    .ok()
-                            })
                         {
                             cfg.update(new_cfg);
                             info!("Reloaded local configure file.");
