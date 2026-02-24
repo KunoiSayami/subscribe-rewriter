@@ -47,6 +47,7 @@ pub fn get_name(value: &serde_yaml::Value) -> Option<String> {
 }
 
 fn apply_change(
+    sub_id: &str,
     mut remote: RemoteConfigure,
     local: RwLockReadGuard<ShareConfig>,
 ) -> anyhow::Result<RemoteConfigure> {
@@ -114,13 +115,20 @@ fn apply_change(
     let last2 = new_proxy_group.len() - 1;
     let mut replaced_relay = 0;
     let mut additional_groups = local.groups().clone();
+    let sub_id = sub_id.to_string();
+    additional_groups.retain(|group| {
+        if group.not_apply_to().contains(&sub_id) {
+            return false;
+        }
+        if !group.apply_to().is_empty() {
+            return group.apply_to().contains(&sub_id);
+        }
+        true
+    });
 
     // Find additional group if there is a relay group with <PlaceHold> need to fill
     if let Some(ref replace_target) = last_proxies {
-        for group in additional_groups
-            .iter_mut()
-            .filter(|x| x.group_type().eq("relay"))
-        {
+        for group in additional_groups.iter_mut() {
             for proxy in group.proxies_mut() {
                 if proxy == "<PlaceHold>" {
                     *proxy = replace_target.clone();
@@ -131,6 +139,7 @@ fn apply_change(
     } else {
         log::warn!("Find <PlaceHold> relay group, but target outbound not found");
     }
+
     new_proxy_group.splice(last2..last2, additional_groups);
     if replaced_relay > 0 {
         log::debug!("Replaced {} relay", replaced_relay);

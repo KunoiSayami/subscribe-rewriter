@@ -62,6 +62,10 @@ mod proxy_groups {
         url: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         interval: Option<u64>,
+        #[serde(skip_serializing, default)]
+        apply_to: Vec<String>,
+        #[serde(skip_serializing, default)]
+        not_apply_to: Vec<String>,
     }
 
     impl ProxyGroup {
@@ -108,6 +112,8 @@ mod proxy_groups {
                 proxies,
                 url: Some(url),
                 interval: Some(600),
+                apply_to: vec![],
+                not_apply_to: vec![],
             }
         }
 
@@ -135,6 +141,14 @@ mod proxy_groups {
 
         pub fn proxies_mut(&mut self) -> &mut Vec<String> {
             &mut self.proxies
+        }
+
+        pub fn apply_to(&self) -> &[String] {
+            &self.apply_to
+        }
+
+        pub fn not_apply_to(&self) -> &[String] {
+            &self.not_apply_to
         }
     }
 

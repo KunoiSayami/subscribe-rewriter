@@ -99,7 +99,7 @@ pub mod v2 {
         };
 
         let ret = if !method.eq("raw") {
-            let ret = apply_change(parse_remote_configure(&content)?, share_config)
+            let ret = apply_change(&sub_id, parse_remote_configure(&content)?, share_config)
                 .inspect_err(|e| error!("Apply change error: {e:?}"))?;
 
             serde_yaml::to_string(&ret).context("Serialize yaml failed")?
