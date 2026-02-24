@@ -142,11 +142,17 @@ fn apply_change(
 
     new_proxy_group.splice(last2..last2, additional_groups);
     if replaced_relay > 0 {
-        log::debug!("Replaced {} relay", replaced_relay);
+        log::debug!("Replaced {replaced_relay} relay");
     }
 
     remote.mut_proxy_groups().set_vec(new_proxy_group);
     let mut new_proxy_pending = local.proxies().get_vec().clone();
+
+    if let Some(ref replace_target) = last_proxies {
+        for proxy in &mut new_proxy_pending {
+            Proxy::replace_dialer_proxy(proxy, replace_target);
+        }
+    }
 
     new_proxy_pending.extend(
         remote
@@ -161,6 +167,8 @@ fn apply_change(
     remote.mut_proxies().set_vec(new_proxy_pending);
 
     remote.mut_rules().insert_head(local.rules().get_element());
+
+    remote.normalize();
 
     Ok(remote)
 }

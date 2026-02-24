@@ -11,12 +11,24 @@ mod proxies {
         cipher: String,
         #[serde(default)]
         password: String,
+        #[serde(rename = "dialer-proxy", skip_serializing_if = "Option::is_none")]
+        dialer_proxy: Option<String>,
         udp: bool,
     }
 
     impl Proxy {
         pub fn password(&self) -> &str {
             &self.password
+        }
+
+        pub fn replace_dialer_proxy(value: &mut serde_yaml::Value, target: &str) {
+            let has_placeholder = value["dialer-proxy"]
+                .as_str()
+                .is_some_and(|v| v.eq("<PlaceHold>"));
+
+            if has_placeholder {
+                value["dialer-proxy"] = target.into();
+            }
         }
 
         pub fn is_empty_password(value: serde_yaml::Value) -> Option<String> {
@@ -272,6 +284,10 @@ mod remote_configure {
 
         pub fn proxies_len(&self) -> usize {
             self.proxies.0.len()
+        }
+
+        pub(crate) fn normalize(&mut self) {
+            self.mode = self.mode.to_ascii_lowercase();
         }
     }
 
@@ -791,3 +807,47 @@ pub use remote_configure::RemoteConfigure;
 pub use rules::Rules;
 pub use share_config::{ShareConfig, UpdateConfigureEvent};
 pub use upstream::UpStream;
+
+#[cfg(test)]
+mod tests {
+    use super::Proxy;
+
+    fn make_proxy_value(dialer_proxy: Option<&str>) -> serde_yaml::Value {
+        let mut yaml = format!(
+            "name: test\ntype: ss\nserver: 1.2.3.4\nport: 443\ncipher: aes-256-gcm\npassword: pass\nudp: true\n"
+        );
+        if let Some(dp) = dialer_proxy {
+            yaml.push_str(&format!("dialer-proxy: {dp}\n"));
+        }
+        serde_yaml::from_str(&yaml).unwrap()
+    }
+
+    fn get_dialer_proxy(value: &serde_yaml::Value) -> Option<String> {
+        value
+            .as_mapping()
+            .and_then(|m| m.get(&serde_yaml::Value::String("dialer-proxy".into())))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    }
+
+    #[test]
+    fn replace_dialer_proxy_with_placeholder() {
+        let mut value = make_proxy_value(Some("<PlaceHold>"));
+        Proxy::replace_dialer_proxy(&mut value, "my-proxy");
+        assert_eq!(get_dialer_proxy(&value).as_deref(), Some("my-proxy"));
+    }
+
+    #[test]
+    fn replace_dialer_proxy_skips_different_value() {
+        let mut value = make_proxy_value(Some("other-proxy"));
+        Proxy::replace_dialer_proxy(&mut value, "my-proxy");
+        assert_eq!(get_dialer_proxy(&value).as_deref(), Some("other-proxy"));
+    }
+
+    #[test]
+    fn replace_dialer_proxy_skips_when_absent() {
+        let mut value = make_proxy_value(None);
+        Proxy::replace_dialer_proxy(&mut value, "my-proxy");
+        assert_eq!(get_dialer_proxy(&value), None);
+    }
+}
