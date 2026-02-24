@@ -1,11 +1,12 @@
-# clashrw
+# Subscribe rewriter
 
 A proxy subscription rewriting service for Clash. It fetches remote Clash configurations, merges them with locally defined proxies, rules, and proxy groups, and serves the rewritten result over HTTP.
 
 ## Features
 
 - **Subscription rewriting** — Fetches upstream Clash subscription configs and injects local proxies, custom rules, and additional proxy groups before serving them to clients.
-- **Custom proxy groups** — Define local proxy groups (select, relay, url-test) in the config. Relay groups support a `<PlaceHold>` placeholder that is automatically resolved to an upstream proxy group.
+- **Custom proxy groups** — Define local proxy groups (select, relay, url-test) in the config. Supports `<PlaceHold>` placeholder resolution and per-subscription filtering via `apply_to` / `not_apply_to`.
+- **Dialer proxy chaining** — Local proxies can use `dialer-proxy: <PlaceHold>` to automatically chain through a matched upstream proxy group.
 - **Multi-subscription support** — Maps multiple `sub_id` paths to different upstream URLs, each with optional overrides (e.g. expiry, traffic limits).
 - **Redis caching** — Caches fetched upstream configs in Redis (default TTL: 600s) to reduce redundant requests. Can be disabled with `--nocache`.
 - **External rules** — Import rules from external JSON config files via the `additional_rules` field, with support for domain, domain-suffix, and domain-regex rule types.
@@ -62,6 +63,7 @@ rules:
   - "DOMAIN-SUFFIX,example.com,DIRECT"
 
 # Extra proxies prepended to the upstream config
+# dialer-proxy: <PlaceHold> is resolved to the last matched manual_add_group_name entry
 proxies:
   - name: "My Proxy"
     type: ss
@@ -70,6 +72,13 @@ proxies:
     cipher: chacha20-ietf-poly1305
     password: secret
     udp: true
+  - name: "Chained Proxy"
+    type: ss
+    server: "5.6.7.8"
+    port: 8388
+    dialer-proxy: <PlaceHold>
+    cipher: chacha20-ietf-poly1305
+    password: secret
 
 # Proxy name keywords for filtering
 keyword:
@@ -84,13 +93,17 @@ manual_add_group_name:
   - "Endpoint Choose"
 
 # Custom local proxy groups (aliases: "groups", "proxy-groups")
-# <PlaceHold> in relay groups is replaced with the last matched manual_add_group_name entry
+# <PlaceHold> in proxy lists is replaced with the last matched manual_add_group_name entry
+# apply_to: only include this group for the listed sub_ids
+# not_apply_to: exclude this group for the listed sub_ids
 proxy_groups:
   - name: "Custom Relay"
     type: relay
     proxies:
       - <PlaceHold>
       - "My Proxy"
+    not_apply_to:
+      - "some_sub_id"
 
 # External rule files (aliases: "additional-rules")
 # Format: "<path_to_json>,<target_proxy_group>"
