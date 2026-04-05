@@ -764,6 +764,7 @@ mod share_config {
         }
 
         pub fn update(&mut self, local_configure: Configure) {
+            self.alias_map = Self::alias_into_hashmap(local_configure.upstream());
             self.upstream = Self::upstreams_into_hashmap(local_configure.upstream());
             self.rules = local_configure.rules().clone();
             self.keyword = local_configure.keyword().clone();
@@ -776,8 +777,9 @@ mod share_config {
 
         pub fn briefing(&self) -> String {
             format!(
-                "Find {} subscriptions, {} rules, {} proxies, {} groups",
+                "Find {} subscriptions (total {} alias), {} rules, {} proxies, {} groups",
                 self.upstream.len(),
+                self.alias_map.len(),
                 self.rules.len(),
                 self.proxies.len(),
                 self.groups.len(),
