@@ -398,6 +398,8 @@ mod upstream {
         raw: Option<String>,
         #[serde(rename = "override")]
         sub_override: Option<OverridableValue>,
+        #[serde(default)]
+        alias: Vec<String>,
     }
 
     impl UpStream {
@@ -413,6 +415,10 @@ mod upstream {
 
         pub fn sub_override(&self) -> Option<OverridableValue> {
             self.sub_override
+        }
+
+        pub fn alias(&self) -> &[String] {
+            &self.alias
         }
     }
 }
@@ -689,6 +695,7 @@ mod share_config {
 
     pub struct ShareConfig {
         redis_client: redis::Client,
+        alias_map: HashMap<String, String>,
         upstream: HashMap<String, UrlConfig>,
         rules: Rules,
         proxies: Proxies,
@@ -704,11 +711,14 @@ mod share_config {
         ) -> anyhow::Result<redis::aio::MultiplexedConnection> {
             Ok(self.redis_client.get_multiplexed_async_connection().await?)
         }
+
         pub fn search_url(&self, key: &str) -> Option<&UrlConfig> {
-            self.upstream.get(key)
+            self.alias_map.get(key).and_then(|x| self.upstream.get(x))
         }
+
         pub fn new(local_configure: Configure, redis_client: redis::Client) -> Self {
             let ret = Self {
+                alias_map: Self::alias_into_hashmap(local_configure.upstream()),
                 upstream: Self::upstreams_into_hashmap(local_configure.upstream()),
                 rules: local_configure.rules().clone(),
                 proxies: local_configure.proxies().clone(),
@@ -738,6 +748,19 @@ mod share_config {
             v.into_iter()
                 .map(|x| (x.sub_id().to_string(), UrlConfig::from(x)))
                 .collect()
+        }
+
+        pub fn alias_into_hashmap(v: &Vec<UpStream>) -> HashMap<String, String> {
+            let mut m = HashMap::new();
+            for (alias, sub) in v.into_iter().map(|x| (x.alias().to_vec(), x.sub_id())) {
+                for x in alias {
+                    if m.insert(x, sub.into()).is_some() {
+                        log::warn!("{sub} has alias duplicate");
+                    }
+                }
+                m.insert(sub.into(), sub.into());
+            }
+            m
         }
 
         pub fn update(&mut self, local_configure: Configure) {
