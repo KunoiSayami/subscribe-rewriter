@@ -38,10 +38,10 @@ static URL_TEST_INTERVAL: OnceLock<u64> = OnceLock::new();
 static SUB_PREFIX: OnceLock<String> = OnceLock::new();
 
 pub fn get_name(value: &serde_yaml::Value) -> Option<String> {
-    if let serde_yaml::Value::Mapping(map) = value {
-        if let serde_yaml::Value::String(s) = map.get("name")? {
-            return Some(s.clone());
-        }
+    if let serde_yaml::Value::Mapping(map) = value
+        && let serde_yaml::Value::String(s) = map.get("name")?
+    {
+        return Some(s.clone());
     }
     None
 }
@@ -270,7 +270,9 @@ fn main() -> anyhow::Result<()> {
     binding
         .filter_module("rustls", LevelFilter::Warn)
         .filter_module("reqwest", LevelFilter::Warn)
-        .filter_module("h2", LevelFilter::Warn);
+        .filter_module("h2", LevelFilter::Warn)
+        .filter_module("tower_http", LevelFilter::Warn)
+        .filter_module("tracing", LevelFilter::Warn);
     if matches.get_flag("systemd") {
         binding.format(|buf, record| writeln!(buf, "[{}] - {}", record.level(), record.args()));
     }

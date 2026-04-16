@@ -72,15 +72,13 @@ pub mod v2 {
         let redis_key = if !method.eq("raw") {
             sha256::digest(mapper.upstream())
         } else {
-            sha256::digest(format!("{}raw", mapper.upstream()))
+            format!("sr-raw{}", sha256::digest(mapper.upstream()))
         };
 
-        let remote_url = if method.eq("raw") {
-            if let Some(s) = mapper.raw() {
-                s
-            } else {
-                mapper.upstream()
-            }
+        let remote_url = if method.eq("raw")
+            && let Some(s) = mapper.raw()
+        {
+            s
         } else {
             mapper.upstream()
         };

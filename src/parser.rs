@@ -795,12 +795,10 @@ mod share_config {
                 match event {
                     UpdateConfigureEvent::NeedUpdate => {
                         let mut cfg = configure_file.write().await;
-                        if let Some(new_cfg) = Configure::load(&configure_path)
-                            .await
-                            .inspect_err(|e| {
+                        if let Ok(new_cfg) =
+                            Configure::load(&configure_path).await.inspect_err(|e| {
                                 error!("[Can be safely ignored] Load configure: {e:?}")
                             })
-                            .ok()
                         {
                             cfg.update(new_cfg);
                             info!("Reloaded local configure file.");

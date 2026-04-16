@@ -105,9 +105,10 @@ mod cache_ {
                 let ret = redis_conn.exists(&redis_key).await.inspect_err(|e| {
                     warn!("[Can be safely ignored] Got error in query key {redis_key:?}: {e:?}")
                 });
-                if let Ok(ret) = ret {
-                    if ret {
-                        let cache = redis_conn
+                if let Ok(ret) = ret
+                    && ret
+                {
+                    let cache = redis_conn
                             .get::<_, Option<String>>(&redis_key)
                             .await
                             .inspect_err(|e| {
@@ -116,11 +117,10 @@ mod cache_ {
                                 )
                             })
                             .ok().flatten();
-                        if let Some(cache) = read_cache(cache) {
-                            debug!("Cache: Read from cache");
-                            trace!("Cache: Content => {cache:?}");
-                            return Ok((cache.content().to_string(), cache.remote_status()));
-                        }
+                    if let Some(cache) = read_cache(cache) {
+                        debug!("Cache: Read from cache");
+                        trace!("Cache: Content => {cache:?}");
+                        return Ok((cache.content().to_string(), cache.remote_status()));
                     }
                 }
             }
@@ -133,8 +133,11 @@ mod cache_ {
             ErrorCode::RequestTimeout
         })?);
 
+        //log::trace!("{redis_key}");
+
         if let Ok(redis_conn) = redis_conn
-            && parse_remote_configure(cache.content()).is_ok_and(|x| x.proxies_len() > 0)
+            && (!redis_key.starts_with("sr-raw")
+                && parse_remote_configure(cache.content()).is_ok_and(|x| x.proxies_len() > 0))
         {
             cache.write_to_redis(redis_key, redis_conn).await;
         }
