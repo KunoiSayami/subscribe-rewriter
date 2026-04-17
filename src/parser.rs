@@ -523,7 +523,7 @@ mod configure {
                 ret.rules.append(t);
             }
 
-            if ret.additional_rules.len() > 0 {
+            if !ret.additional_rules.is_empty() {
                 log::debug!("Load {rules_count} from external configure");
             }
             Ok(ret)
@@ -584,8 +584,7 @@ mod external_config {
         pub(crate) fn transform(self, target: &str) -> Vec<String> {
             self.rules
                 .iter()
-                .map(|x| x.transform(target))
-                .flatten()
+                .flat_map(|x| x.transform(target))
                 .collect()
         }
     }
@@ -745,14 +744,14 @@ mod share_config {
             self.test_url.clone()
         }*/
         pub fn upstreams_into_hashmap(v: &Vec<UpStream>) -> HashMap<String, UrlConfig> {
-            v.into_iter()
+            v.iter()
                 .map(|x| (x.sub_id().to_string(), UrlConfig::from(x)))
                 .collect()
         }
 
         pub fn alias_into_hashmap(v: &Vec<UpStream>) -> HashMap<String, String> {
             let mut m = HashMap::new();
-            for (alias, sub) in v.into_iter().map(|x| (x.alias().to_vec(), x.sub_id())) {
+            for (alias, sub) in v.iter().map(|x| (x.alias().to_vec(), x.sub_id())) {
                 for x in alias {
                     if m.insert(x, sub.into()).is_some() {
                         log::warn!("{sub} has alias duplicate");
