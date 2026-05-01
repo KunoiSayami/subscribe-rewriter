@@ -400,6 +400,8 @@ mod upstream {
         sub_override: Option<OverridableValue>,
         #[serde(default)]
         alias: Vec<String>,
+        #[serde(default)]
+        passthrough: bool,
     }
 
     impl UpStream {
@@ -419,6 +421,10 @@ mod upstream {
 
         pub fn alias(&self) -> &[String] {
             &self.alias
+        }
+
+        pub fn passthrough(&self) -> bool {
+            self.passthrough
         }
     }
 }
@@ -657,6 +663,7 @@ mod share_config {
         upstream: String,
         raw: Option<String>,
         sub_override: Option<OverridableValue>,
+        passthrough: bool,
     }
 
     impl UrlConfig {
@@ -670,15 +677,20 @@ mod share_config {
             upstream: String,
             raw: Option<String>,
             sub_override: Option<OverridableValue>,
+            passthrough: bool,
         ) -> Self {
             Self {
                 upstream,
                 raw,
                 sub_override,
+                passthrough,
             }
         }
         pub fn sub_override(&self) -> Option<OverridableValue> {
             self.sub_override
+        }
+        pub fn passthrough(&self) -> bool {
+            self.passthrough
         }
     }
 
@@ -688,6 +700,7 @@ mod share_config {
                 value.upstream().to_string(),
                 value.raw().cloned(),
                 value.sub_override(),
+                value.passthrough(),
             )
         }
     }

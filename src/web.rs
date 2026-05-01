@@ -96,7 +96,7 @@ pub mod v2 {
             remote_status
         };
 
-        let ret = if !method.eq("raw") {
+        let ret = if !method.eq("raw") && !mapper.passthrough() {
             let ret = apply_change(&sub_id, parse_remote_configure(&content)?, share_config)
                 .inspect_err(|e| error!("Apply change error: {e:?}"))?;
 
