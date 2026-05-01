@@ -100,6 +100,15 @@ mod cache_ {
         redis_key: String,
         mut redis_conn: anyhow::Result<redis::aio::MultiplexedConnection>,
     ) -> Result<(String, String), ErrorCode> {
+        let local = std::path::Path::new(url);
+        if local.exists() && local.is_file() {
+            let content = std::fs::read_to_string(local).map_err(|e| {
+                error!("Failed to read local file {url:?}: {e:?}");
+                ErrorCode::InternalServerError
+            })?;
+            return Ok((content, String::new()));
+        }
+
         if let Ok(ref mut redis_conn) = redis_conn {
             if !DISABLE_CACHE.get().unwrap() {
                 let ret = redis_conn.exists(&redis_key).await.inspect_err(|e| {
