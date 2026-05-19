@@ -93,7 +93,16 @@ pub mod v2 {
             remote_status
         };
 
-        let (ret, filename) = if method.eq("singbox") {
+        let (ret, filename) = if sub_id.eq("sample") {
+            let mut remote = parse_remote_configure(&content)?;
+            remote
+                .mut_proxies()
+                .set_vec(vec![crate::parser::Proxy::stub_value()]);
+            (
+                serde_yaml::to_string(&remote).context("Serialize yaml failed")?,
+                format!("attachment; filename=Clash_sample.yaml"),
+            )
+        } else if method.eq("singbox") {
             let cfg = crate::singbox::convert(&content, share_config.singbox_base());
             let json =
                 serde_json::to_string_pretty(&cfg).context("Serialize singbox json failed")?;

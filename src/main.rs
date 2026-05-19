@@ -277,6 +277,8 @@ fn main() -> anyhow::Result<()> {
         .filter_module("reqwest", LevelFilter::Warn)
         .filter_module("h2", LevelFilter::Warn)
         .filter_module("tower_http", LevelFilter::Warn)
+        .filter_module("mio", LevelFilter::Warn)
+        .filter_module("notify", LevelFilter::Warn)
         .filter_module("tracing", LevelFilter::Warn);
     if matches.get_flag("systemd") {
         binding.format(|buf, record| writeln!(buf, "[{}] - {}", record.level(), record.args()));

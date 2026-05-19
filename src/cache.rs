@@ -128,7 +128,7 @@ mod cache_ {
                             .ok().flatten();
                     if let Some(cache) = read_cache(cache) {
                         debug!("Cache: Read from cache");
-                        trace!("Cache: Content => {cache:?}");
+                        //trace!("Cache: Content => {cache:?}");
                         return Ok((cache.content().to_string(), cache.remote_status()));
                     }
                 }
@@ -145,7 +145,7 @@ mod cache_ {
         //log::trace!("{redis_key}");
 
         if let Ok(redis_conn) = redis_conn
-            && (!redis_key.starts_with("sr-raw")
+            && (!redis_key.starts_with("sr-")
                 && parse_remote_configure(cache.content()).is_ok_and(|x| x.proxies_len() > 0))
         {
             cache.write_to_redis(redis_key, redis_conn).await;

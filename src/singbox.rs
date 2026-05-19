@@ -106,7 +106,11 @@ fn build_vless(host: &str, port: u16, uuid: &str, tag: &str, kv: &HashMap<&str, 
         None
     };
 
-    let tls = tls_object(sni, false, reality);
+    let mut tls = tls_object(sni, false, reality);
+    if tls["reality"]["enabled"].as_bool() == Some(true) {
+        tls["utls"] = json!({"enabled": true, "fingerprint": "chrome"});
+    }
+    let tls = tls;
 
     let mut out = json!({
         "type": "vless",
@@ -147,48 +151,147 @@ fn build_anytls(
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+fn tag_of(v: &Value) -> Option<&str> {
+    v["tag"].as_str()
+}
+
+fn type_of(v: &Value) -> Option<&str> {
+    v["type"].as_str()
+}
+
+/// Return true if `tag` contains any `|`-separated keyword from `pattern`.
+fn tag_matches_pattern(tag: &str, pattern: &str) -> bool {
+    pattern.split('|').any(|kw| tag.contains(kw))
+}
+
+/// Apply a `filter` array to `proxy_tags`, returning the surviving tags.
+/// Each rule has `"action": "include"|"exclude"` and
+/// `"keywords": ["pat1|pat2", ...]` where each element is a `|`-joined pattern.
+fn apply_filter(proxy_tags: &[String], filter: &[Value]) -> Vec<String> {
+    let mut tags: Vec<String> = proxy_tags.to_vec();
+    for rule in filter {
+        let action = rule["action"].as_str().unwrap_or("");
+        let keywords: Vec<&str> = rule["keywords"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|k| k.as_str()).collect())
+            .unwrap_or_default();
+
+        tags = tags
+            .into_iter()
+            .filter(|tag| {
+                let matched = keywords.iter().any(|pat| tag_matches_pattern(tag, pat));
+                match action {
+                    "include" => matched,
+                    "exclude" => !matched,
+                    _ => true,
+                }
+            })
+            .collect();
+    }
+    tags
+}
+
+/// If the outbound's `outbounds` list contains `"{all}"`, expand it using
+/// the outbound's own `filter` rules. Outbounds without `{all}` are untouched.
+fn expand_all(entry: &mut Value, proxy_tags: &[String]) {
+    // Check and clone filter before taking a mutable borrow on entry.
+    let has_all = entry["outbounds"]
+        .as_array()
+        .is_some_and(|a| a.iter().any(|v| v.as_str() == Some("{all}")));
+    if !has_all {
+        return;
+    }
+
+    let filter_val = entry.get("filter").cloned().unwrap_or(Value::Null);
+    let filter_rules: Vec<Value> = filter_val.as_array().cloned().unwrap_or_default();
+    let filtered = apply_filter(proxy_tags, &filter_rules);
+
+    let arr = match entry["outbounds"].as_array_mut() {
+        Some(a) => a,
+        None => return,
+    };
+    let mut expanded: Vec<Value> = Vec::new();
+    for item in arr.drain(..) {
+        if item.as_str() == Some("{all}") {
+            expanded.extend(filtered.iter().map(|t| json!(t)));
+        } else {
+            expanded.push(item);
+        }
+    }
+    *arr = expanded;
+
+    if let Some(obj) = entry.as_object_mut() {
+        obj.remove("filter");
+    }
+}
+
+/// Merge converted proxy outbounds into the `outbounds` array of a base config.
+///
+/// - Outbounds containing `"{all}"` in their list have it replaced with proxy
+///   tags filtered by their own `filter` rules.
+/// - `direct`: kept as-is if present, otherwise appended.
+/// - `selector`: if absent, a new one with `default: "urltest"` is prepended.
+/// - `urltest`: if absent, a new one with all proxy tags is prepended.
+/// - Converted proxy outbounds are appended at the end.
+fn merge_outbounds(
+    mut existing: Vec<Value>,
+    proxy_tags: &[String],
+    proxies: Vec<Value>,
+) -> Vec<Value> {
+    let has_direct = existing.iter().any(|v| type_of(v) == Some("direct"));
+    let has_selector = existing.iter().any(|v| type_of(v) == Some("selector"));
+    let has_urltest = existing.iter().any(|v| type_of(v) == Some("urltest"));
+
+    for entry in existing.iter_mut() {
+        expand_all(entry, proxy_tags);
+    }
+
+    if !has_direct {
+        existing.insert(0, json!({"type": "direct", "tag": "direct"}));
+    }
+    if !has_urltest {
+        existing.insert(
+            0,
+            json!({"type": "urltest", "tag": "urltest", "outbounds": proxy_tags}),
+        );
+    }
+    if !has_selector {
+        existing.insert(
+            0,
+            json!({"type": "selector", "tag": "select", "default": "urltest", "outbounds": proxy_tags}),
+        );
+    }
+
+    existing.extend(proxies);
+    existing
+}
+
 /// Parse a raw Surge subscription (one proxy per line) and return a sing-box
-/// config JSON. If `base` is provided the converted proxies + selector are
-/// prepended to the skeleton's existing `outbounds`; otherwise a minimal
-/// skeleton is generated.
+/// config JSON. If `base` is provided the `outbounds` array is merged per the
+/// rules above; otherwise a minimal skeleton is generated.
 pub fn convert(raw: &str, base: Option<&Value>) -> Value {
-    let outbounds: Vec<Value> = raw.lines().filter_map(parse_line).collect();
+    let proxies: Vec<Value> = raw.lines().filter_map(parse_line).collect();
 
-    let proxy_tags: Vec<String> = outbounds
+    let proxy_tags: Vec<String> = proxies
         .iter()
-        .filter_map(|v| v["tag"].as_str().map(|s| s.to_string()))
+        .filter_map(|v| tag_of(v).map(|s| s.to_string()))
         .collect();
-
-    let selector = json!({
-        "type": "selector",
-        "tag": "proxy",
-        "outbounds": proxy_tags,
-    });
 
     match base {
         Some(base) => {
             let mut cfg = base.clone();
-            let existing: Vec<Value> = cfg["outbounds"].as_array().cloned().unwrap_or_default();
-            let mut all_outbounds = vec![selector];
-            all_outbounds.extend(outbounds);
-            all_outbounds.extend(existing);
-            cfg["outbounds"] = json!(all_outbounds);
+            let existing = cfg["outbounds"].as_array().cloned().unwrap_or_default();
+            cfg["outbounds"] = json!(merge_outbounds(existing, &proxy_tags, proxies));
             cfg
         }
         None => {
-            let mut all_outbounds = vec![
-                selector,
-                json!({"type": "direct", "tag": "direct"}),
-                json!({"type": "block",  "tag": "block"}),
-                json!({"type": "dns",    "tag": "dns-out"}),
-            ];
-            all_outbounds.extend(outbounds);
+            let outbounds = merge_outbounds(vec![], &proxy_tags, proxies);
             json!({
-                "log":  {"level": "info", "timestamp": true},
-                "dns":  {},
-                "inbounds":  [],
-                "outbounds": all_outbounds,
-                "route": {},
+                "log":      {},
+                "dns":      {},
+                "inbounds": [],
+                "outbounds": outbounds,
+                "route":    {},
                 "experimental": {},
             })
         }
@@ -235,24 +338,87 @@ mod tests {
     }
 
     #[test]
-    fn convert_produces_selector() {
+    fn convert_no_base_creates_all_fixed_outbounds() {
         let raw = "trojan=h.example.com:443, password=pw, tls-host=sni.example.com, over-tls=true, tls-verification=false, tag=JP T01\n";
         let cfg = convert(raw, None);
-        assert_eq!(cfg["outbounds"][0]["type"], "selector");
-        assert_eq!(cfg["outbounds"][0]["outbounds"][0], "JP T01");
+        let obs = cfg["outbounds"].as_array().unwrap();
+        assert_eq!(obs[0]["type"], "selector");
+        assert_eq!(obs[0]["outbounds"][0], "JP T01");
+        assert_eq!(obs[1]["type"], "urltest");
+        assert_eq!(obs[1]["outbounds"][0], "JP T01");
+        assert_eq!(obs[2]["type"], "direct");
+        assert_eq!(obs[3]["tag"], "JP T01");
     }
 
     #[test]
-    fn convert_with_base_prepends_outbounds() {
+    fn convert_with_base_missing_selector_and_urltest_creates_them() {
         let raw = "trojan=h.example.com:443, password=pw, tls-host=sni.example.com, over-tls=true, tls-verification=false, tag=JP T01\n";
         let base = json!({
-            "log": {"level": "warn"},
             "outbounds": [{"type": "direct", "tag": "direct"}],
         });
         let cfg = convert(raw, Some(&base));
-        assert_eq!(cfg["log"]["level"], "warn");
-        assert_eq!(cfg["outbounds"][0]["type"], "selector");
-        assert_eq!(cfg["outbounds"][1]["tag"], "JP T01");
-        assert_eq!(cfg["outbounds"][2]["tag"], "direct");
+        let obs = cfg["outbounds"].as_array().unwrap();
+        assert_eq!(obs[0]["type"], "selector");
+        assert_eq!(obs[0]["default"], "urltest");
+        assert_eq!(obs[1]["type"], "urltest");
+        assert_eq!(obs[2]["type"], "direct");
+        assert_eq!(obs[3]["tag"], "JP T01");
+    }
+
+    #[test]
+    fn expand_all_with_no_filter_inserts_all_tags() {
+        let raw = "trojan=h.example.com:443, password=pw, tls-host=s.example.com, over-tls=true, tls-verification=false, tag=HK Node\ntrojan=h.example.com:444, password=pw, tls-host=s.example.com, over-tls=true, tls-verification=false, tag=JP Node\n";
+        let base = json!({
+            "outbounds": [
+                {"type": "selector", "tag": "all", "outbounds": ["{all}"]},
+                {"type": "direct", "tag": "direct"},
+            ],
+        });
+        let cfg = convert(raw, Some(&base));
+        let outs = cfg["outbounds"][0]["outbounds"].as_array().unwrap();
+        assert!(outs.contains(&json!("HK Node")));
+        assert!(outs.contains(&json!("JP Node")));
+    }
+
+    fn find_by_tag<'a>(obs: &'a [Value], tag: &str) -> &'a Value {
+        obs.iter().find(|v| v["tag"].as_str() == Some(tag)).unwrap()
+    }
+
+    #[test]
+    fn expand_all_include_filter() {
+        let raw = "trojan=h.example.com:443, password=pw, tls-host=s.example.com, over-tls=true, tls-verification=false, tag=HK Node\ntrojan=h.example.com:444, password=pw, tls-host=s.example.com, over-tls=true, tls-verification=false, tag=JP Node\n";
+        let base = json!({
+            "outbounds": [
+                {
+                    "type": "selector", "tag": "hk-only", "outbounds": ["{all}"],
+                    "filter": [{"action": "include", "keywords": ["HK|香港"]}]
+                },
+                {"type": "direct", "tag": "direct"},
+            ],
+        });
+        let cfg = convert(raw, Some(&base));
+        let obs = cfg["outbounds"].as_array().unwrap();
+        let outs = find_by_tag(obs, "hk-only")["outbounds"].as_array().unwrap();
+        assert!(outs.contains(&json!("HK Node")));
+        assert!(!outs.contains(&json!("JP Node")));
+    }
+
+    #[test]
+    fn expand_all_exclude_filter() {
+        let raw = "trojan=h.example.com:443, password=pw, tls-host=s.example.com, over-tls=true, tls-verification=false, tag=HK Node\ntrojan=h.example.com:444, password=pw, tls-host=s.example.com, over-tls=true, tls-verification=false, tag=JP 免费\n";
+        let base = json!({
+            "outbounds": [
+                {
+                    "type": "selector", "tag": "no-free", "outbounds": ["{all}"],
+                    "filter": [{"action": "exclude", "keywords": ["免费"]}]
+                },
+                {"type": "direct", "tag": "direct"},
+            ],
+        });
+        let cfg = convert(raw, Some(&base));
+        let obs = cfg["outbounds"].as_array().unwrap();
+        let outs = find_by_tag(obs, "no-free")["outbounds"].as_array().unwrap();
+        assert!(outs.contains(&json!("HK Node")));
+        assert!(!outs.contains(&json!("JP 免费")));
     }
 }

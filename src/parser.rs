@@ -39,6 +39,23 @@ mod proxies {
                 None
             }
         }
+
+        pub fn stub_value() -> serde_yaml::Value {
+            serde_yaml::to_value(Self::stub()).unwrap()
+        }
+
+        pub fn stub() -> Self {
+            Self {
+                name: "stub".into(),
+                type_: "ss".into(),
+                server: "example.com".into(),
+                port: 80,
+                cipher: "chacha20-ietf-poly1305".into(),
+                password: "114514".into(),
+                dialer_proxy: None,
+                udp: true,
+            }
+        }
     }
 
     #[derive(Clone, Debug, Deserialize, Serialize)]
