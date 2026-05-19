@@ -1,6 +1,7 @@
 mod cache;
 mod file_watcher;
 mod parser;
+mod singbox;
 mod web;
 
 use crate::file_watcher::FileWatchDog;
@@ -178,7 +179,7 @@ async fn async_main(
     file_update_sender: mpsc::Sender<UpdateConfigureEvent>,
     file_update_receiver: mpsc::Receiver<UpdateConfigureEvent>,
 ) -> anyhow::Result<()> {
-    let local_file = Configure::load(&configure_path).await?;
+    let (local_file, singbox_base) = Configure::load(&configure_path).await?;
 
     let redis_conn = redis::Client::open(local_file.http().redis_address())?;
     let bind = format!(
@@ -192,7 +193,11 @@ async fn async_main(
         local_file.http().port()
     );
 
-    let arc_configure = Arc::new(RwLock::new(ShareConfig::new(local_file, redis_conn)));
+    let arc_configure = Arc::new(RwLock::new(ShareConfig::new(
+        local_file,
+        singbox_base,
+        redis_conn,
+    )));
 
     let router = Router::new()
         .route(

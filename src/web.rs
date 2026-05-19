@@ -69,18 +69,15 @@ pub mod v2 {
             .search_url(&sub_id)
             .ok_or(ErrorCode::Forbidden)?;
 
-        let redis_key = if !method.eq("raw") {
-            sha256::digest(mapper.upstream())
-        } else {
-            format!("sr-raw{}", sha256::digest(mapper.upstream()))
-        };
-
-        let remote_url = if method.eq("raw")
+        let (redis_key, remote_url) = if method.eq("singbox") {
+            let url = mapper.singbox().ok_or(ErrorCode::NotAcceptable)?;
+            (format!("sr-singbox{}", sha256::digest(url)), url)
+        } else if method.eq("raw")
             && let Some(s) = mapper.raw()
         {
-            s
+            (format!("sr-raw{}", sha256::digest(mapper.upstream())), s)
         } else {
-            mapper.upstream()
+            (sha256::digest(mapper.upstream()), mapper.upstream())
         };
 
         let (content, remote_status) = read_or_fetch(
@@ -96,13 +93,20 @@ pub mod v2 {
             remote_status
         };
 
-        let ret = if !method.eq("raw") && !mapper.passthrough() {
+        let (ret, filename) = if method.eq("singbox") {
+            let cfg = crate::singbox::convert(&content, share_config.singbox_base());
+            let json =
+                serde_json::to_string_pretty(&cfg).context("Serialize singbox json failed")?;
+            (json, format!("attachment; filename=singbox_{sub_id}.json"))
+        } else if !method.eq("raw") && !mapper.passthrough() {
             let ret = apply_change(&sub_id, parse_remote_configure(&content)?, share_config)
                 .inspect_err(|e| error!("Apply change error: {e:?}"))?;
-
-            serde_yaml::to_string(&ret).context("Serialize yaml failed")?
+            (
+                serde_yaml::to_string(&ret).context("Serialize yaml failed")?,
+                format!("attachment; filename=Clash_{sub_id}.yaml"),
+            )
         } else {
-            content
+            (content, format!("attachment; filename=Clash_{sub_id}.yaml"))
         };
 
         let response = if remote_status.is_empty() {
@@ -110,10 +114,7 @@ pub mod v2 {
         } else {
             Response::builder().header("subscription-userinfo", remote_status)
         }
-        .header(
-            "content-disposition",
-            format!("attachment; filename=Clash_{sub_id}.yaml"),
-        )
+        .header("content-disposition", filename)
         .body(ret)
         .unwrap();
         Ok(response)

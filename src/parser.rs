@@ -396,6 +396,7 @@ mod upstream {
         sub_id: String,
         upstream: String,
         raw: Option<String>,
+        singbox: Option<String>,
         #[serde(rename = "override")]
         sub_override: Option<OverridableValue>,
         #[serde(default)]
@@ -413,6 +414,9 @@ mod upstream {
         }
         pub fn raw(&self) -> Option<&String> {
             self.raw.as_ref()
+        }
+        pub fn singbox(&self) -> Option<&String> {
+            self.singbox.as_ref()
         }
 
         pub fn sub_override(&self) -> Option<OverridableValue> {
@@ -461,6 +465,8 @@ mod configure {
         proxy_groups: Vec<ProxyGroup>,
         #[serde(default, alias = "additional-rules")]
         additional_rules: Vec<String>,
+        #[serde(default, alias = "singbox-config")]
+        singbox_config: Option<String>,
     }
 
     impl Configure {
@@ -472,6 +478,9 @@ mod configure {
         }
         pub fn keyword(&self) -> &Keyword {
             &self.keyword
+        }
+        pub fn singbox_config(&self) -> Option<&str> {
+            self.singbox_config.as_deref()
         }
         /*pub fn get_url_maps(&self) -> HashMap<String, String> {
             let mut m = HashMap::new();
@@ -500,7 +509,9 @@ mod configure {
             &self.proxy_groups
         }
 
-        pub(crate) async fn load<P: AsRef<Path>>(p: P) -> anyhow::Result<Self> {
+        pub(crate) async fn load<P: AsRef<Path>>(
+            p: P,
+        ) -> anyhow::Result<(Self, Option<serde_json::Value>)> {
             let mut ret = serde_yaml::from_str::<Self>(
                 tokio::fs::read_to_string(p.as_ref())
                     .await
@@ -532,7 +543,22 @@ mod configure {
             if !ret.additional_rules.is_empty() {
                 log::debug!("Load {rules_count} from external configure");
             }
-            Ok(ret)
+
+            let singbox_base = if let Some(path) = ret.singbox_config() {
+                match tokio::fs::read_to_string(path).await {
+                    Ok(s) => serde_json::from_str(&s)
+                        .inspect_err(|e| log::warn!("Parse singbox config {path}: {e:?}"))
+                        .ok(),
+                    Err(e) => {
+                        log::warn!("Read singbox config {path}: {e:?}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            Ok((ret, singbox_base))
         }
     }
 }
@@ -662,6 +688,7 @@ mod share_config {
     pub struct UrlConfig {
         upstream: String,
         raw: Option<String>,
+        singbox: Option<String>,
         sub_override: Option<OverridableValue>,
         passthrough: bool,
     }
@@ -673,15 +700,20 @@ mod share_config {
         pub fn raw(&self) -> Option<&str> {
             self.raw.as_deref()
         }
+        pub fn singbox(&self) -> Option<&str> {
+            self.singbox.as_deref()
+        }
         pub fn new(
             upstream: String,
             raw: Option<String>,
+            singbox: Option<String>,
             sub_override: Option<OverridableValue>,
             passthrough: bool,
         ) -> Self {
             Self {
                 upstream,
                 raw,
+                singbox,
                 sub_override,
                 passthrough,
             }
@@ -699,6 +731,7 @@ mod share_config {
             Self::new(
                 value.upstream().to_string(),
                 value.raw().cloned(),
+                value.singbox().cloned(),
                 value.sub_override(),
                 value.passthrough(),
             )
@@ -715,6 +748,7 @@ mod share_config {
         keyword: Keyword,
         test_url: String,
         manual_insert_proxies: Vec<String>,
+        singbox_base: Option<serde_json::Value>,
     }
 
     impl ShareConfig {
@@ -728,7 +762,11 @@ mod share_config {
             self.alias_map.get(key).and_then(|x| self.upstream.get(x))
         }
 
-        pub fn new(local_configure: Configure, redis_client: redis::Client) -> Self {
+        pub fn new(
+            local_configure: Configure,
+            singbox_base: Option<serde_json::Value>,
+            redis_client: redis::Client,
+        ) -> Self {
             let ret = Self {
                 alias_map: Self::alias_into_hashmap(local_configure.upstream()),
                 upstream: Self::upstreams_into_hashmap(local_configure.upstream()),
@@ -739,6 +777,7 @@ mod share_config {
                 groups: local_configure.proxy_groups().clone(),
                 test_url: local_configure.test_url(),
                 manual_insert_proxies: local_configure.need_added_proxy(),
+                singbox_base,
             };
             log::debug!("{}", ret.briefing());
             ret
@@ -775,7 +814,11 @@ mod share_config {
             m
         }
 
-        pub fn update(&mut self, local_configure: Configure) {
+        pub fn update(
+            &mut self,
+            local_configure: Configure,
+            singbox_base: Option<serde_json::Value>,
+        ) {
             self.alias_map = Self::alias_into_hashmap(local_configure.upstream());
             self.upstream = Self::upstreams_into_hashmap(local_configure.upstream());
             self.rules = local_configure.rules().clone();
@@ -784,7 +827,12 @@ mod share_config {
             self.groups = local_configure.proxy_groups().clone();
             self.test_url = local_configure.test_url();
             self.manual_insert_proxies = local_configure.need_added_proxy();
+            self.singbox_base = singbox_base;
             log::debug!("{}", self.briefing());
+        }
+
+        pub fn singbox_base(&self) -> Option<&serde_json::Value> {
+            self.singbox_base.as_ref()
         }
 
         pub fn briefing(&self) -> String {
@@ -807,12 +855,12 @@ mod share_config {
                 match event {
                     UpdateConfigureEvent::NeedUpdate => {
                         let mut cfg = configure_file.write().await;
-                        if let Ok(new_cfg) =
+                        if let Ok((new_cfg, singbox_base)) =
                             Configure::load(&configure_path).await.inspect_err(|e| {
                                 error!("[Can be safely ignored] Load configure: {e:?}")
                             })
                         {
-                            cfg.update(new_cfg);
+                            cfg.update(new_cfg, singbox_base);
                             info!("Reloaded local configure file.");
                         };
                     }
