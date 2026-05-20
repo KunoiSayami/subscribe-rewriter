@@ -108,6 +108,7 @@ pub mod v2 {
                 share_config.singbox_base(),
                 share_config.proxies().get_vec(),
                 &share_config.rules().get_element(),
+                share_config.manual_insert_proxies(),
             );
             let json =
                 serde_json::to_string_pretty(&cfg).context("Serialize singbox json failed")?;

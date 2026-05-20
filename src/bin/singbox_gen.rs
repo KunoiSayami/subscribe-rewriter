@@ -7,6 +7,7 @@ fn main() -> anyhow::Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("sample.txt"));
     let base_config = args.next().map(PathBuf::from);
+    let local_config = args.next().map(PathBuf::from);
 
     let raw = std::fs::read_to_string(&subscription)
         .unwrap_or_else(|e| panic!("cannot read {}: {e}", subscription.display()));
@@ -18,7 +19,44 @@ fn main() -> anyhow::Result<()> {
             .unwrap_or_else(|e| panic!("invalid JSON in {}: {e}", p.display()))
     });
 
-    let result = subscribe_rewriter::singbox::convert(&raw, base.as_ref(), &[], &[]);
+    let (extra, clash_rules, placeholder_detour) = if let Some(p) = local_config {
+        let s = std::fs::read_to_string(&p)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", p.display()));
+        let cfg: serde_yaml::Value = serde_yaml::from_str(&s)
+            .unwrap_or_else(|e| panic!("invalid YAML in {}: {e}", p.display()));
+
+        let proxies = cfg["proxies"].as_sequence().cloned().unwrap_or_default();
+
+        let rules = cfg["rules"]
+            .as_sequence()
+            .map(|seq| {
+                seq.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let groups = cfg["manual_add_group_name"]
+            .as_sequence()
+            .map(|seq| {
+                seq.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        (proxies, rules, groups)
+    } else {
+        (vec![], vec![], vec![])
+    };
+
+    let result = subscribe_rewriter::singbox::convert(
+        &raw,
+        base.as_ref(),
+        &extra,
+        &clash_rules,
+        &placeholder_detour,
+    );
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }

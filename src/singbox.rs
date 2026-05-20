@@ -15,7 +15,23 @@ fn u16_field(v: &serde_yaml::Value, key: &str) -> u16 {
     v[key].as_u64().unwrap_or(0) as u16
 }
 
-fn build_shadowsocks_clash(v: &serde_yaml::Value) -> Option<Value> {
+fn apply_detour(out: &mut Value, v: &serde_yaml::Value, resolved: Option<&str>) {
+    let dp = str_field(v, "dialer-proxy");
+    if dp.is_empty() {
+        return;
+    }
+    let detour = if dp == "<PlaceHold>" {
+        match resolved {
+            Some(t) => t,
+            None => return,
+        }
+    } else {
+        dp
+    };
+    out["detour"] = json!(detour);
+}
+
+fn build_shadowsocks_clash(v: &serde_yaml::Value, resolved_detour: Option<&str>) -> Option<Value> {
     let tag = str_field(v, "name");
     let server = str_field(v, "server");
     let port = u16_field(v, "port");
@@ -40,10 +56,11 @@ fn build_shadowsocks_clash(v: &serde_yaml::Value) -> Option<Value> {
             }
         }
     }
+    apply_detour(&mut out, v, resolved_detour);
     Some(out)
 }
 
-fn build_vmess_clash(v: &serde_yaml::Value) -> Option<Value> {
+fn build_vmess_clash(v: &serde_yaml::Value, resolved_detour: Option<&str>) -> Option<Value> {
     let tag = str_field(v, "name");
     let server = str_field(v, "server");
     let port = u16_field(v, "port");
@@ -72,13 +89,14 @@ fn build_vmess_clash(v: &serde_yaml::Value) -> Option<Value> {
             None,
         );
     }
+    apply_detour(&mut out, v, resolved_detour);
     Some(out)
 }
 
-fn parse_clash_proxy(v: &serde_yaml::Value) -> Option<Value> {
+fn parse_clash_proxy(v: &serde_yaml::Value, resolved_detour: Option<&str>) -> Option<Value> {
     match str_field(v, "type") {
-        "ss" => build_shadowsocks_clash(v),
-        "vmess" => build_vmess_clash(v),
+        "ss" => build_shadowsocks_clash(v, resolved_detour),
+        "vmess" => build_vmess_clash(v, resolved_detour),
         "trojan" => {
             let tag = str_field(v, "name");
             let server = str_field(v, "server");
@@ -89,14 +107,16 @@ fn parse_clash_proxy(v: &serde_yaml::Value) -> Option<Value> {
             }
             let sni = str_field(v, "sni");
             let skip_cert = bool_field(v, "skip-cert-verify");
-            Some(json!({
+            let mut out = json!({
                 "type": "trojan",
                 "tag": tag,
                 "server": server,
                 "server_port": port,
                 "password": password,
                 "tls": tls_object(if sni.is_empty() { None } else { Some(sni) }, skip_cert, None),
-            }))
+            });
+            apply_detour(&mut out, v, resolved_detour);
+            Some(out)
         }
         _ => None,
     }
@@ -445,13 +465,34 @@ fn merge_rules(cfg: &mut Value, clash_rules: &[String]) {
 ///
 /// `clash_rules` are Clash-format rule strings from the local config file that
 /// are converted and prepended to `route.rules`.
+/// Resolve the `<PlaceHold>` detour tag by finding the last entry in
+/// `candidates` that exists as a tag in the base config outbounds.
+fn resolve_placeholder_detour<'a>(
+    candidates: &'a [String],
+    base: Option<&Value>,
+) -> Option<&'a str> {
+    let outbounds = base?.get("outbounds")?.as_array()?;
+    candidates.iter().rev().find_map(|name| {
+        outbounds
+            .iter()
+            .any(|ob| ob["tag"].as_str() == Some(name.as_str()))
+            .then_some(name.as_str())
+    })
+}
+
 pub fn convert(
     raw: &str,
     base: Option<&Value>,
     extra: &[serde_yaml::Value],
     clash_rules: &[String],
+    placeholder_detour: &[String],
 ) -> Value {
-    let config_proxies: Vec<Value> = extra.iter().filter_map(parse_clash_proxy).collect();
+    let resolved_detour = resolve_placeholder_detour(placeholder_detour, base);
+
+    let config_proxies: Vec<Value> = extra
+        .iter()
+        .filter_map(|v| parse_clash_proxy(v, resolved_detour))
+        .collect();
     let config_tags: Vec<String> = config_proxies
         .iter()
         .filter_map(|v| tag_of(v).map(|s| s.to_string()))
@@ -462,7 +503,11 @@ pub fn convert(
     let remote: Vec<Value> = if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(raw) {
         yaml["proxies"]
             .as_sequence()
-            .map(|seq| seq.iter().filter_map(parse_clash_proxy).collect())
+            .map(|seq| {
+                seq.iter()
+                    .filter_map(|v| parse_clash_proxy(v, None))
+                    .collect()
+            })
             .unwrap_or_else(|| raw.lines().filter_map(parse_line).collect())
     } else {
         raw.lines().filter_map(parse_line).collect()
@@ -545,7 +590,7 @@ mod tests {
     #[test]
     fn convert_no_base_creates_all_fixed_outbounds() {
         let raw = "trojan=h.example.com:443, password=pw, tls-host=sni.example.com, over-tls=true, tls-verification=false, tag=JP T01\n";
-        let cfg = convert(raw, None, &[], &[]);
+        let cfg = convert(raw, None, &[], &[], &[]);
         let obs = cfg["outbounds"].as_array().unwrap();
         assert_eq!(obs[0]["type"], "selector");
         assert_eq!(obs[0]["outbounds"][0], "JP T01");
@@ -561,7 +606,7 @@ mod tests {
         let base = json!({
             "outbounds": [{"type": "direct", "tag": "direct"}],
         });
-        let cfg = convert(raw, Some(&base), &[], &[]);
+        let cfg = convert(raw, Some(&base), &[], &[], &[]);
         let obs = cfg["outbounds"].as_array().unwrap();
         assert_eq!(obs[0]["type"], "selector");
         assert_eq!(obs[0]["default"], "urltest");
@@ -579,7 +624,7 @@ mod tests {
                 {"type": "direct", "tag": "direct"},
             ],
         });
-        let cfg = convert(raw, Some(&base), &[], &[]);
+        let cfg = convert(raw, Some(&base), &[], &[], &[]);
         let outs = cfg["outbounds"][0]["outbounds"].as_array().unwrap();
         assert!(outs.contains(&json!("HK Node")));
         assert!(outs.contains(&json!("JP Node")));
@@ -601,7 +646,7 @@ mod tests {
                 {"type": "direct", "tag": "direct"},
             ],
         });
-        let cfg = convert(raw, Some(&base), &[], &[]);
+        let cfg = convert(raw, Some(&base), &[], &[], &[]);
         let obs = cfg["outbounds"].as_array().unwrap();
         let outs = find_by_tag(obs, "hk-only")["outbounds"].as_array().unwrap();
         assert!(outs.contains(&json!("HK Node")));
@@ -611,7 +656,7 @@ mod tests {
     #[test]
     fn parses_clash_ss() {
         let yaml = "proxies:\n  - name: abc\n    type: ss\n    server: example.com\n    port: 2333\n    cipher: chacha20-ietf-poly1305\n    password: example114514\n    udp: true\n";
-        let cfg = convert(yaml, None, &[], &[]);
+        let cfg = convert(yaml, None, &[], &[], &[]);
         let obs = cfg["outbounds"].as_array().unwrap();
         let ss = obs.iter().find(|v| v["type"] == "shadowsocks").unwrap();
         assert_eq!(ss["tag"], "abc");
@@ -624,7 +669,7 @@ mod tests {
     #[test]
     fn parses_clash_vmess() {
         let yaml = "proxies:\n  - name: vmtest\n    type: vmess\n    server: v.example.com\n    port: 443\n    uuid: bf000d23-0752-40b4-affe-68f7707a9661\n    alterId: 0\n    cipher: auto\n    tls: true\n    servername: sni.example.com\n    skip-cert-verify: false\n";
-        let cfg = convert(yaml, None, &[], &[]);
+        let cfg = convert(yaml, None, &[], &[], &[]);
         let obs = cfg["outbounds"].as_array().unwrap();
         let vm = obs.iter().find(|v| v["type"] == "vmess").unwrap();
         assert_eq!(vm["tag"], "vmtest");
@@ -636,7 +681,7 @@ mod tests {
     #[test]
     fn parses_clash_trojan() {
         let yaml = "proxies:\n  - name: tj\n    type: trojan\n    server: t.example.com\n    port: 443\n    password: secret\n    sni: sni.example.com\n    skip-cert-verify: false\n";
-        let cfg = convert(yaml, None, &[], &[]);
+        let cfg = convert(yaml, None, &[], &[], &[]);
         let obs = cfg["outbounds"].as_array().unwrap();
         let tj = obs.iter().find(|v| v["type"] == "trojan").unwrap();
         assert_eq!(tj["tag"], "tj");
@@ -656,10 +701,43 @@ mod tests {
                 {"type": "direct", "tag": "direct"},
             ],
         });
-        let cfg = convert(raw, Some(&base), &[], &[]);
+        let cfg = convert(raw, Some(&base), &[], &[], &[]);
         let obs = cfg["outbounds"].as_array().unwrap();
         let outs = find_by_tag(obs, "no-free")["outbounds"].as_array().unwrap();
         assert!(outs.contains(&json!("HK Node")));
         assert!(!outs.contains(&json!("JP 免费")));
+    }
+
+    #[test]
+    fn dialer_proxy_placeholder_resolved_to_detour() {
+        let extra_yaml = "name: chained\ntype: ss\nserver: 1.2.3.4\nport: 1234\ncipher: chacha20-ietf-poly1305\npassword: pw\ndialer-proxy: <PlaceHold>\n";
+        let extra: serde_yaml::Value = serde_yaml::from_str(extra_yaml).unwrap();
+        let base = json!({
+            "outbounds": [
+                {"type": "selector", "tag": "🔰 节点选择", "outbounds": []},
+                {"type": "direct", "tag": "direct"},
+            ],
+        });
+        let candidates = vec!["🔰 节点选择".to_string()];
+        let cfg = convert(
+            "",
+            Some(&base),
+            std::slice::from_ref(&extra),
+            &[],
+            &candidates,
+        );
+        let obs = cfg["outbounds"].as_array().unwrap();
+        let chained = obs.iter().find(|v| v["tag"] == "chained").unwrap();
+        assert_eq!(chained["detour"], "🔰 节点选择");
+    }
+
+    #[test]
+    fn dialer_proxy_literal_becomes_detour() {
+        let extra_yaml = "name: chained\ntype: ss\nserver: 1.2.3.4\nport: 1234\ncipher: chacha20-ietf-poly1305\npassword: pw\ndialer-proxy: some-group\n";
+        let extra: serde_yaml::Value = serde_yaml::from_str(extra_yaml).unwrap();
+        let cfg = convert("", None, std::slice::from_ref(&extra), &[], &[]);
+        let obs = cfg["outbounds"].as_array().unwrap();
+        let chained = obs.iter().find(|v| v["tag"] == "chained").unwrap();
+        assert_eq!(chained["detour"], "some-group");
     }
 }
