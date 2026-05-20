@@ -312,10 +312,12 @@ fn apply_filter(proxy_tags: &[String], filter: &[Value]) -> Vec<String> {
     tags
 }
 
-/// If the outbound's `outbounds` list contains `"{all}"` or `"{config_proxy}"`,
-/// expand them using the outbound's own `filter` rules. `{all}` filters all proxy
-/// tags; `{config_proxy}` filters only the local config proxy tags.
-/// Outbounds without either placeholder are untouched.
+/// If the outbound's `outbounds` list contains `"{all}"`, `"{config_proxy}"`, or
+/// `"{upstream_proxy}"`, expand them using the outbound's own `filter` rules.
+/// - `{all}`: all proxy tags (config + upstream)
+/// - `{config_proxy}`: only local config proxy tags
+/// - `{upstream_proxy}`: only upstream subscription proxy tags (all minus config)
+/// Outbounds without any placeholder are untouched.
 fn expand_all(entry: &mut Value, proxy_tags: &[String], config_tags: &[String]) {
     let outbounds = match entry["outbounds"].as_array() {
         Some(a) => a,
@@ -325,14 +327,25 @@ fn expand_all(entry: &mut Value, proxy_tags: &[String], config_tags: &[String]) 
     let has_config = outbounds
         .iter()
         .any(|v| v.as_str() == Some("{config_proxy}"));
-    if !has_all && !has_config {
+    let has_upstream = outbounds
+        .iter()
+        .any(|v| v.as_str() == Some("{upstream_proxy}"));
+    if !has_all && !has_config && !has_upstream {
         return;
     }
+
+    let config_tag_set: std::collections::HashSet<&String> = config_tags.iter().collect();
+    let upstream_tags: Vec<String> = proxy_tags
+        .iter()
+        .filter(|t| !config_tag_set.contains(t))
+        .cloned()
+        .collect();
 
     let filter_val = entry.get("filter").cloned().unwrap_or(Value::Null);
     let filter_rules: Vec<Value> = filter_val.as_array().cloned().unwrap_or_default();
     let filtered_all = apply_filter(proxy_tags, &filter_rules);
     let filtered_config = apply_filter(config_tags, &filter_rules);
+    let filtered_upstream = apply_filter(&upstream_tags, &filter_rules);
 
     let arr = match entry["outbounds"].as_array_mut() {
         Some(a) => a,
@@ -343,6 +356,7 @@ fn expand_all(entry: &mut Value, proxy_tags: &[String], config_tags: &[String]) 
         match item.as_str() {
             Some("{all}") => expanded.extend(filtered_all.iter().map(|t| json!(t))),
             Some("{config_proxy}") => expanded.extend(filtered_config.iter().map(|t| json!(t))),
+            Some("{upstream_proxy}") => expanded.extend(filtered_upstream.iter().map(|t| json!(t))),
             _ => expanded.push(item),
         }
     }
@@ -804,5 +818,33 @@ mod tests {
         let direct_rule = combined.iter().find(|r| r["outbound"] == "direct").unwrap();
         let cidrs = direct_rule["ip_cidr"].as_array().unwrap();
         assert!(cidrs.contains(&json!("10.0.0.0/8")));
+    }
+
+    #[test]
+    fn upstream_proxy_expands_to_non_config_tags() {
+        let raw = "trojan=h.example.com:443, password=pw, tls-host=s.example.com, over-tls=true, tls-verification=false, tag=Remote Node\n";
+        let config_yaml = "name: Config Node\ntype: ss\nserver: 1.2.3.4\nport: 1234\ncipher: chacha20-ietf-poly1305\npassword: pw\nudp: true\n";
+        let extra: serde_yaml::Value = serde_yaml::from_str(config_yaml).unwrap();
+        let base = json!({
+            "outbounds": [
+                {"type": "selector", "tag": "upstream-only", "outbounds": ["{upstream_proxy}"]},
+                {"type": "selector", "tag": "config-only", "outbounds": ["{config_proxy}"]},
+                {"type": "direct", "tag": "direct"},
+            ],
+        });
+        let cfg = convert(raw, Some(&base), std::slice::from_ref(&extra), &[], &[]);
+        let obs = cfg["outbounds"].as_array().unwrap();
+
+        let upstream_outs = find_by_tag(obs, "upstream-only")["outbounds"]
+            .as_array()
+            .unwrap();
+        assert!(upstream_outs.contains(&json!("Remote Node")));
+        assert!(!upstream_outs.contains(&json!("Config Node")));
+
+        let config_outs = find_by_tag(obs, "config-only")["outbounds"]
+            .as_array()
+            .unwrap();
+        assert!(config_outs.contains(&json!("Config Node")));
+        assert!(!config_outs.contains(&json!("Remote Node")));
     }
 }
