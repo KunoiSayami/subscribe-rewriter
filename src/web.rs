@@ -103,7 +103,12 @@ pub mod v2 {
                 format!("attachment; filename=Clash_sample.yaml"),
             )
         } else if method.eq("singbox") {
-            let cfg = crate::singbox::convert(&content, share_config.singbox_base());
+            let cfg = crate::singbox::convert(
+                &content,
+                share_config.singbox_base(),
+                share_config.proxies().get_vec(),
+                &share_config.rules().get_element(),
+            );
             let json =
                 serde_json::to_string_pretty(&cfg).context("Serialize singbox json failed")?;
             (json, format!("attachment; filename=singbox_{sub_id}.json"))

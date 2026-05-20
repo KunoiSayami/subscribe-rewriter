@@ -1,6 +1,107 @@
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
+// ── Clash YAML proxy parser ───────────────────────────────────────────────────
+
+fn str_field<'a>(v: &'a serde_yaml::Value, key: &str) -> &'a str {
+    v[key].as_str().unwrap_or("")
+}
+
+fn bool_field(v: &serde_yaml::Value, key: &str) -> bool {
+    v[key].as_bool().unwrap_or(false)
+}
+
+fn u16_field(v: &serde_yaml::Value, key: &str) -> u16 {
+    v[key].as_u64().unwrap_or(0) as u16
+}
+
+fn build_shadowsocks_clash(v: &serde_yaml::Value) -> Option<Value> {
+    let tag = str_field(v, "name");
+    let server = str_field(v, "server");
+    let port = u16_field(v, "port");
+    let method = str_field(v, "cipher");
+    let password = str_field(v, "password");
+    if tag.is_empty() || server.is_empty() || port == 0 {
+        return None;
+    }
+    let mut out = json!({
+        "type": "shadowsocks",
+        "tag": tag,
+        "server": server,
+        "server_port": port,
+        "method": method,
+        "password": password,
+    });
+    if let Some(plugin) = v["plugin"].as_str() {
+        if !plugin.is_empty() {
+            out["plugin"] = json!(plugin);
+            if let Some(opts) = v["plugin-opts"].as_str() {
+                out["plugin_opts"] = json!(opts);
+            }
+        }
+    }
+    Some(out)
+}
+
+fn build_vmess_clash(v: &serde_yaml::Value) -> Option<Value> {
+    let tag = str_field(v, "name");
+    let server = str_field(v, "server");
+    let port = u16_field(v, "port");
+    let uuid = str_field(v, "uuid");
+    let cipher = str_field(v, "cipher");
+    let alter_id = v["alterId"].as_u64().unwrap_or(0);
+    if tag.is_empty() || server.is_empty() || port == 0 {
+        return None;
+    }
+    let security = if cipher.is_empty() { "auto" } else { cipher };
+    let mut out = json!({
+        "type": "vmess",
+        "tag": tag,
+        "server": server,
+        "server_port": port,
+        "uuid": uuid,
+        "security": security,
+        "alter_id": alter_id,
+    });
+    if bool_field(v, "tls") {
+        let sni = str_field(v, "servername");
+        let skip_cert = bool_field(v, "skip-cert-verify");
+        out["tls"] = tls_object(
+            if sni.is_empty() { None } else { Some(sni) },
+            skip_cert,
+            None,
+        );
+    }
+    Some(out)
+}
+
+fn parse_clash_proxy(v: &serde_yaml::Value) -> Option<Value> {
+    match str_field(v, "type") {
+        "ss" => build_shadowsocks_clash(v),
+        "vmess" => build_vmess_clash(v),
+        "trojan" => {
+            let tag = str_field(v, "name");
+            let server = str_field(v, "server");
+            let port = u16_field(v, "port");
+            let password = str_field(v, "password");
+            if tag.is_empty() || server.is_empty() || port == 0 {
+                return None;
+            }
+            let sni = str_field(v, "sni");
+            let skip_cert = bool_field(v, "skip-cert-verify");
+            Some(json!({
+                "type": "trojan",
+                "tag": tag,
+                "server": server,
+                "server_port": port,
+                "password": password,
+                "tls": tls_object(if sni.is_empty() { None } else { Some(sni) }, skip_cert, None),
+            }))
+        }
+        _ => None,
+    }
+}
+
 // ── Surge-line key=value parser ───────────────────────────────────────────────
 
 fn parse_kv(line: &str) -> HashMap<&str, &str> {
@@ -266,18 +367,101 @@ fn merge_outbounds(
     existing
 }
 
-/// Parse a raw Surge subscription (one proxy per line) and return a sing-box
+// ── Clash rule → sing-box route rule ─────────────────────────────────────────
+
+/// Convert a single Clash rule string into a sing-box route rule `Value`.
+///
+/// Supported types: DOMAIN, DOMAIN-SUFFIX, DOMAIN-KEYWORD, IP-CIDR, IP-CIDR6.
+/// Returns `None` for unsupported types (MATCH, GEOIP, DST-PORT, …).
+fn convert_clash_rule(rule: &str) -> Option<Value> {
+    let rule = rule.trim();
+    // Strip inline comments
+    let rule = rule.split('#').next()?.trim();
+    let parts: Vec<&str> = rule.splitn(4, ',').map(str::trim).collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    let (kind, value, outbound) = (parts[0], parts[1], parts[2]);
+    // Normalise DIRECT → "direct" so it matches the generated outbound tag.
+    let outbound = if outbound.eq_ignore_ascii_case("direct") {
+        "direct"
+    } else {
+        outbound
+    };
+
+    let field = match kind {
+        "DOMAIN" => "domain",
+        "DOMAIN-SUFFIX" => "domain_suffix",
+        "DOMAIN-KEYWORD" => "domain_keyword",
+        "DOMAIN-REGEX" => "domain_regex",
+        "IP-CIDR" | "IP-CIDR6" => "ip_cidr",
+        _ => return None,
+    };
+
+    Some(json!({
+        field: [value],
+        "outbound": outbound,
+    }))
+}
+
+/// Merge converted Clash rules into the `route.rules` array of the config.
+/// New rules are prepended before any existing ones so they take priority.
+fn merge_rules(cfg: &mut Value, clash_rules: &[String]) {
+    let new_rules: Vec<Value> = clash_rules
+        .iter()
+        .filter_map(|r| convert_clash_rule(r))
+        .collect();
+
+    if new_rules.is_empty() {
+        return;
+    }
+
+    let existing: Vec<Value> = cfg["route"]["rules"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+
+    let mut merged = new_rules;
+    merged.extend(existing);
+
+    cfg["route"]["rules"] = json!(merged);
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+/// Parse a raw subscription (Clash YAML or Surge line format) and return a sing-box
 /// config JSON. If `base` is provided the `outbounds` array is merged per the
 /// rules above; otherwise a minimal skeleton is generated.
-pub fn convert(raw: &str, base: Option<&Value>) -> Value {
-    let proxies: Vec<Value> = raw.lines().filter_map(parse_line).collect();
+///
+/// `extra` are additional Clash YAML proxy entries (e.g. from the local config
+/// file) prepended before the subscription proxies.
+///
+/// `clash_rules` are Clash-format rule strings from the local config file that
+/// are converted and prepended to `route.rules`.
+pub fn convert(
+    raw: &str,
+    base: Option<&Value>,
+    extra: &[serde_yaml::Value],
+    clash_rules: &[String],
+) -> Value {
+    let mut proxies: Vec<Value> = extra.iter().filter_map(parse_clash_proxy).collect();
+
+    let remote: Vec<Value> = if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(raw) {
+        yaml["proxies"]
+            .as_sequence()
+            .map(|seq| seq.iter().filter_map(parse_clash_proxy).collect())
+            .unwrap_or_else(|| raw.lines().filter_map(parse_line).collect())
+    } else {
+        raw.lines().filter_map(parse_line).collect()
+    };
+    proxies.extend(remote);
 
     let proxy_tags: Vec<String> = proxies
         .iter()
         .filter_map(|v| tag_of(v).map(|s| s.to_string()))
         .collect();
 
-    match base {
+    let mut cfg = match base {
         Some(base) => {
             let mut cfg = base.clone();
             let existing = cfg["outbounds"].as_array().cloned().unwrap_or_default();
@@ -295,7 +479,10 @@ pub fn convert(raw: &str, base: Option<&Value>) -> Value {
                 "experimental": {},
             })
         }
-    }
+    };
+
+    merge_rules(&mut cfg, clash_rules);
+    cfg
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -340,7 +527,7 @@ mod tests {
     #[test]
     fn convert_no_base_creates_all_fixed_outbounds() {
         let raw = "trojan=h.example.com:443, password=pw, tls-host=sni.example.com, over-tls=true, tls-verification=false, tag=JP T01\n";
-        let cfg = convert(raw, None);
+        let cfg = convert(raw, None, &[], &[]);
         let obs = cfg["outbounds"].as_array().unwrap();
         assert_eq!(obs[0]["type"], "selector");
         assert_eq!(obs[0]["outbounds"][0], "JP T01");
@@ -356,7 +543,7 @@ mod tests {
         let base = json!({
             "outbounds": [{"type": "direct", "tag": "direct"}],
         });
-        let cfg = convert(raw, Some(&base));
+        let cfg = convert(raw, Some(&base), &[], &[]);
         let obs = cfg["outbounds"].as_array().unwrap();
         assert_eq!(obs[0]["type"], "selector");
         assert_eq!(obs[0]["default"], "urltest");
@@ -374,7 +561,7 @@ mod tests {
                 {"type": "direct", "tag": "direct"},
             ],
         });
-        let cfg = convert(raw, Some(&base));
+        let cfg = convert(raw, Some(&base), &[], &[]);
         let outs = cfg["outbounds"][0]["outbounds"].as_array().unwrap();
         assert!(outs.contains(&json!("HK Node")));
         assert!(outs.contains(&json!("JP Node")));
@@ -396,11 +583,47 @@ mod tests {
                 {"type": "direct", "tag": "direct"},
             ],
         });
-        let cfg = convert(raw, Some(&base));
+        let cfg = convert(raw, Some(&base), &[], &[]);
         let obs = cfg["outbounds"].as_array().unwrap();
         let outs = find_by_tag(obs, "hk-only")["outbounds"].as_array().unwrap();
         assert!(outs.contains(&json!("HK Node")));
         assert!(!outs.contains(&json!("JP Node")));
+    }
+
+    #[test]
+    fn parses_clash_ss() {
+        let yaml = "proxies:\n  - name: abc\n    type: ss\n    server: example.com\n    port: 2333\n    cipher: chacha20-ietf-poly1305\n    password: example114514\n    udp: true\n";
+        let cfg = convert(yaml, None, &[], &[]);
+        let obs = cfg["outbounds"].as_array().unwrap();
+        let ss = obs.iter().find(|v| v["type"] == "shadowsocks").unwrap();
+        assert_eq!(ss["tag"], "abc");
+        assert_eq!(ss["server"], "example.com");
+        assert_eq!(ss["server_port"], 2333);
+        assert_eq!(ss["method"], "chacha20-ietf-poly1305");
+        assert_eq!(ss["password"], "example114514");
+    }
+
+    #[test]
+    fn parses_clash_vmess() {
+        let yaml = "proxies:\n  - name: vmtest\n    type: vmess\n    server: v.example.com\n    port: 443\n    uuid: bf000d23-0752-40b4-affe-68f7707a9661\n    alterId: 0\n    cipher: auto\n    tls: true\n    servername: sni.example.com\n    skip-cert-verify: false\n";
+        let cfg = convert(yaml, None, &[], &[]);
+        let obs = cfg["outbounds"].as_array().unwrap();
+        let vm = obs.iter().find(|v| v["type"] == "vmess").unwrap();
+        assert_eq!(vm["tag"], "vmtest");
+        assert_eq!(vm["uuid"], "bf000d23-0752-40b4-affe-68f7707a9661");
+        assert_eq!(vm["security"], "auto");
+        assert_eq!(vm["tls"]["server_name"], "sni.example.com");
+    }
+
+    #[test]
+    fn parses_clash_trojan() {
+        let yaml = "proxies:\n  - name: tj\n    type: trojan\n    server: t.example.com\n    port: 443\n    password: secret\n    sni: sni.example.com\n    skip-cert-verify: false\n";
+        let cfg = convert(yaml, None, &[], &[]);
+        let obs = cfg["outbounds"].as_array().unwrap();
+        let tj = obs.iter().find(|v| v["type"] == "trojan").unwrap();
+        assert_eq!(tj["tag"], "tj");
+        assert_eq!(tj["password"], "secret");
+        assert_eq!(tj["tls"]["server_name"], "sni.example.com");
     }
 
     #[test]
@@ -415,7 +638,7 @@ mod tests {
                 {"type": "direct", "tag": "direct"},
             ],
         });
-        let cfg = convert(raw, Some(&base));
+        let cfg = convert(raw, Some(&base), &[], &[]);
         let obs = cfg["outbounds"].as_array().unwrap();
         let outs = find_by_tag(obs, "no-free")["outbounds"].as_array().unwrap();
         assert!(outs.contains(&json!("HK Node")));

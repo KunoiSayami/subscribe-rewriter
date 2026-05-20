@@ -18,7 +18,7 @@ fn main() -> anyhow::Result<()> {
             .unwrap_or_else(|e| panic!("invalid JSON in {}: {e}", p.display()))
     });
 
-    let result = subscribe_rewriter::singbox::convert(&raw, base.as_ref());
+    let result = subscribe_rewriter::singbox::convert(&raw, base.as_ref(), &[], &[]);
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
