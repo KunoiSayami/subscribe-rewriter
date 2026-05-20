@@ -313,8 +313,8 @@ fn apply_filter(proxy_tags: &[String], filter: &[Value]) -> Vec<String> {
 }
 
 /// If the outbound's `outbounds` list contains `"{all}"` or `"{config_proxy}"`,
-/// expand them. `{all}` uses the outbound's own `filter` rules against all proxy
-/// tags. `{config_proxy}` expands to config-only proxy tags without filtering.
+/// expand them using the outbound's own `filter` rules. `{all}` filters all proxy
+/// tags; `{config_proxy}` filters only the local config proxy tags.
 /// Outbounds without either placeholder are untouched.
 fn expand_all(entry: &mut Value, proxy_tags: &[String], config_tags: &[String]) {
     let outbounds = match entry["outbounds"].as_array() {
@@ -332,6 +332,7 @@ fn expand_all(entry: &mut Value, proxy_tags: &[String], config_tags: &[String]) 
     let filter_val = entry.get("filter").cloned().unwrap_or(Value::Null);
     let filter_rules: Vec<Value> = filter_val.as_array().cloned().unwrap_or_default();
     let filtered_all = apply_filter(proxy_tags, &filter_rules);
+    let filtered_config = apply_filter(config_tags, &filter_rules);
 
     let arr = match entry["outbounds"].as_array_mut() {
         Some(a) => a,
@@ -341,7 +342,7 @@ fn expand_all(entry: &mut Value, proxy_tags: &[String], config_tags: &[String]) 
     for item in arr.drain(..) {
         match item.as_str() {
             Some("{all}") => expanded.extend(filtered_all.iter().map(|t| json!(t))),
-            Some("{config_proxy}") => expanded.extend(config_tags.iter().map(|t| json!(t))),
+            Some("{config_proxy}") => expanded.extend(filtered_config.iter().map(|t| json!(t))),
             _ => expanded.push(item),
         }
     }
@@ -396,26 +397,29 @@ fn merge_outbounds(
 
 // ── Clash rule → sing-box route rule ─────────────────────────────────────────
 
-/// Convert a single Clash rule string into a sing-box route rule `Value`.
+/// A single parsed Clash rule entry before sing-box combination.
+struct ClashRule {
+    field: &'static str,
+    value: String,
+    outbound: String,
+}
+
+/// Parse one Clash rule string into a `ClashRule`.
 ///
-/// Supported types: DOMAIN, DOMAIN-SUFFIX, DOMAIN-KEYWORD, IP-CIDR, IP-CIDR6.
-/// Returns `None` for unsupported types (MATCH, GEOIP, DST-PORT, …).
-fn convert_clash_rule(rule: &str) -> Option<Value> {
-    let rule = rule.trim();
-    // Strip inline comments
-    let rule = rule.split('#').next()?.trim();
+/// Supported types: DOMAIN, DOMAIN-SUFFIX, DOMAIN-KEYWORD, DOMAIN-REGEX,
+/// IP-CIDR, IP-CIDR6. Returns `None` for unsupported types.
+fn parse_clash_rule(rule: &str) -> Option<ClashRule> {
+    let rule = rule.trim().split('#').next()?.trim();
     let parts: Vec<&str> = rule.splitn(4, ',').map(str::trim).collect();
     if parts.len() < 3 {
         return None;
     }
     let (kind, value, outbound) = (parts[0], parts[1], parts[2]);
-    // Normalise DIRECT → "direct" so it matches the generated outbound tag.
     let outbound = if outbound.eq_ignore_ascii_case("direct") {
-        "direct"
+        "direct".to_string()
     } else {
-        outbound
+        outbound.to_string()
     };
-
     let field = match kind {
         "DOMAIN" => "domain",
         "DOMAIN-SUFFIX" => "domain_suffix",
@@ -424,20 +428,59 @@ fn convert_clash_rule(rule: &str) -> Option<Value> {
         "IP-CIDR" | "IP-CIDR6" => "ip_cidr",
         _ => return None,
     };
+    Some(ClashRule {
+        field,
+        value: value.to_string(),
+        outbound,
+    })
+}
 
-    Some(json!({
-        field: [value],
-        "outbound": outbound,
-    }))
+/// Convert and combine Clash rules into sing-box route rules.
+///
+/// Rules targeting the same outbound are merged into a single rule object,
+/// accumulating values per field (OR within a field). This mirrors sing-box's
+/// own default-rule AND-across-fields / OR-within-field semantics.
+fn combine_clash_rules(clash_rules: &[String]) -> Vec<Value> {
+    // Accumulate: outbound → field → [values]
+    // Use a Vec to preserve first-seen insertion order per outbound.
+    let mut order: Vec<String> = Vec::new();
+    let mut map: std::collections::HashMap<
+        String,
+        std::collections::HashMap<&'static str, Vec<String>>,
+    > = std::collections::HashMap::new();
+
+    for raw in clash_rules {
+        let Some(r) = parse_clash_rule(raw) else {
+            continue;
+        };
+        if !map.contains_key(&r.outbound) {
+            order.push(r.outbound.clone());
+        }
+        map.entry(r.outbound)
+            .or_default()
+            .entry(r.field)
+            .or_default()
+            .push(r.value);
+    }
+
+    order
+        .into_iter()
+        .map(|outbound| {
+            let fields = map.remove(&outbound).unwrap();
+            let mut rule = serde_json::Map::new();
+            for (field, values) in fields {
+                rule.insert(field.to_string(), json!(values));
+            }
+            rule.insert("outbound".to_string(), json!(outbound));
+            Value::Object(rule)
+        })
+        .collect()
 }
 
 /// Merge converted Clash rules into the `route.rules` array of the config.
 /// New rules are prepended before any existing ones so they take priority.
 fn merge_rules(cfg: &mut Value, clash_rules: &[String]) {
-    let new_rules: Vec<Value> = clash_rules
-        .iter()
-        .filter_map(|r| convert_clash_rule(r))
-        .collect();
+    let new_rules = combine_clash_rules(clash_rules);
 
     if new_rules.is_empty() {
         return;
@@ -739,5 +782,27 @@ mod tests {
         let obs = cfg["outbounds"].as_array().unwrap();
         let chained = obs.iter().find(|v| v["tag"] == "chained").unwrap();
         assert_eq!(chained["detour"], "some-group");
+    }
+
+    #[test]
+    fn clash_rules_combined_by_outbound() {
+        let rules = vec![
+            "DOMAIN-SUFFIX,cloudfront.net,Proxy".to_string(),
+            "DOMAIN-SUFFIX,github.com,Proxy".to_string(),
+            "IP-CIDR,10.0.0.0/8,DIRECT".to_string(),
+            "DOMAIN,cdn.example.com,Proxy".to_string(),
+        ];
+        let combined = combine_clash_rules(&rules);
+        // Two outbounds: "Proxy" and "direct"
+        assert_eq!(combined.len(), 2);
+        let proxy_rule = combined.iter().find(|r| r["outbound"] == "Proxy").unwrap();
+        let suffixes = proxy_rule["domain_suffix"].as_array().unwrap();
+        assert!(suffixes.contains(&json!("cloudfront.net")));
+        assert!(suffixes.contains(&json!("github.com")));
+        let domains = proxy_rule["domain"].as_array().unwrap();
+        assert!(domains.contains(&json!("cdn.example.com")));
+        let direct_rule = combined.iter().find(|r| r["outbound"] == "direct").unwrap();
+        let cidrs = direct_rule["ip_cidr"].as_array().unwrap();
+        assert!(cidrs.contains(&json!("10.0.0.0/8")));
     }
 }
