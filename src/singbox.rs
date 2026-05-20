@@ -292,20 +292,26 @@ fn apply_filter(proxy_tags: &[String], filter: &[Value]) -> Vec<String> {
     tags
 }
 
-/// If the outbound's `outbounds` list contains `"{all}"`, expand it using
-/// the outbound's own `filter` rules. Outbounds without `{all}` are untouched.
-fn expand_all(entry: &mut Value, proxy_tags: &[String]) {
-    // Check and clone filter before taking a mutable borrow on entry.
-    let has_all = entry["outbounds"]
-        .as_array()
-        .is_some_and(|a| a.iter().any(|v| v.as_str() == Some("{all}")));
-    if !has_all {
+/// If the outbound's `outbounds` list contains `"{all}"` or `"{config_proxy}"`,
+/// expand them. `{all}` uses the outbound's own `filter` rules against all proxy
+/// tags. `{config_proxy}` expands to config-only proxy tags without filtering.
+/// Outbounds without either placeholder are untouched.
+fn expand_all(entry: &mut Value, proxy_tags: &[String], config_tags: &[String]) {
+    let outbounds = match entry["outbounds"].as_array() {
+        Some(a) => a,
+        None => return,
+    };
+    let has_all = outbounds.iter().any(|v| v.as_str() == Some("{all}"));
+    let has_config = outbounds
+        .iter()
+        .any(|v| v.as_str() == Some("{config_proxy}"));
+    if !has_all && !has_config {
         return;
     }
 
     let filter_val = entry.get("filter").cloned().unwrap_or(Value::Null);
     let filter_rules: Vec<Value> = filter_val.as_array().cloned().unwrap_or_default();
-    let filtered = apply_filter(proxy_tags, &filter_rules);
+    let filtered_all = apply_filter(proxy_tags, &filter_rules);
 
     let arr = match entry["outbounds"].as_array_mut() {
         Some(a) => a,
@@ -313,10 +319,10 @@ fn expand_all(entry: &mut Value, proxy_tags: &[String]) {
     };
     let mut expanded: Vec<Value> = Vec::new();
     for item in arr.drain(..) {
-        if item.as_str() == Some("{all}") {
-            expanded.extend(filtered.iter().map(|t| json!(t)));
-        } else {
-            expanded.push(item);
+        match item.as_str() {
+            Some("{all}") => expanded.extend(filtered_all.iter().map(|t| json!(t))),
+            Some("{config_proxy}") => expanded.extend(config_tags.iter().map(|t| json!(t))),
+            _ => expanded.push(item),
         }
     }
     *arr = expanded;
@@ -337,6 +343,7 @@ fn expand_all(entry: &mut Value, proxy_tags: &[String]) {
 fn merge_outbounds(
     mut existing: Vec<Value>,
     proxy_tags: &[String],
+    config_tags: &[String],
     proxies: Vec<Value>,
 ) -> Vec<Value> {
     let has_direct = existing.iter().any(|v| type_of(v) == Some("direct"));
@@ -344,7 +351,7 @@ fn merge_outbounds(
     let has_urltest = existing.iter().any(|v| type_of(v) == Some("urltest"));
 
     for entry in existing.iter_mut() {
-        expand_all(entry, proxy_tags);
+        expand_all(entry, proxy_tags, config_tags);
     }
 
     if !has_direct {
@@ -444,7 +451,13 @@ pub fn convert(
     extra: &[serde_yaml::Value],
     clash_rules: &[String],
 ) -> Value {
-    let mut proxies: Vec<Value> = extra.iter().filter_map(parse_clash_proxy).collect();
+    let config_proxies: Vec<Value> = extra.iter().filter_map(parse_clash_proxy).collect();
+    let config_tags: Vec<String> = config_proxies
+        .iter()
+        .filter_map(|v| tag_of(v).map(|s| s.to_string()))
+        .collect();
+
+    let mut proxies = config_proxies;
 
     let remote: Vec<Value> = if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(raw) {
         yaml["proxies"]
@@ -465,11 +478,16 @@ pub fn convert(
         Some(base) => {
             let mut cfg = base.clone();
             let existing = cfg["outbounds"].as_array().cloned().unwrap_or_default();
-            cfg["outbounds"] = json!(merge_outbounds(existing, &proxy_tags, proxies));
+            cfg["outbounds"] = json!(merge_outbounds(
+                existing,
+                &proxy_tags,
+                &config_tags,
+                proxies
+            ));
             cfg
         }
         None => {
-            let outbounds = merge_outbounds(vec![], &proxy_tags, proxies);
+            let outbounds = merge_outbounds(vec![], &proxy_tags, &config_tags, proxies);
             json!({
                 "log":      {},
                 "dns":      {},
