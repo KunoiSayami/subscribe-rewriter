@@ -1,6 +1,7 @@
 mod cache;
 mod file_watcher;
 mod parser;
+mod ruleset;
 mod singbox;
 mod web;
 
@@ -205,6 +206,7 @@ async fn async_main(
             &format!("/{}/{{sub_id}}", SUB_PREFIX.get().unwrap()),
             axum::routing::get(get),
         )
+        .route("/rule-set/{tag}", axum::routing::get(web::get_rule_set))
         .route(
             "/",
             axum::routing::get(|| async {

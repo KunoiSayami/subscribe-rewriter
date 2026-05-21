@@ -412,17 +412,17 @@ fn merge_outbounds(
 // ── Clash rule → sing-box route rule ─────────────────────────────────────────
 
 /// A single parsed Clash rule entry before sing-box combination.
-struct ClashRule {
-    field: &'static str,
-    value: String,
-    outbound: String,
+pub(crate) struct ClashRule {
+    pub(crate) field: &'static str,
+    pub(crate) value: String,
+    pub(crate) outbound: String,
 }
 
 /// Parse one Clash rule string into a `ClashRule`.
 ///
 /// Supported types: DOMAIN, DOMAIN-SUFFIX, DOMAIN-KEYWORD, DOMAIN-REGEX,
 /// IP-CIDR, IP-CIDR6. Returns `None` for unsupported types.
-fn parse_clash_rule(rule: &str) -> Option<ClashRule> {
+pub(crate) fn parse_clash_rule(rule: &str) -> Option<ClashRule> {
     let rule = rule.trim().split('#').next()?.trim();
     let parts: Vec<&str> = rule.splitn(4, ',').map(str::trim).collect();
     if parts.len() < 3 {

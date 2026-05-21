@@ -403,6 +403,43 @@ mod http_configure {
     }
 }
 
+mod ruleset_config {
+    use super::Deserialize;
+
+    #[derive(Clone, Debug, Default, Deserialize)]
+    pub struct RuleSetRemove {
+        #[serde(default)]
+        pub keyword: Vec<String>,
+        #[serde(default)]
+        pub rules: Vec<String>,
+    }
+
+    #[derive(Clone, Debug, Deserialize)]
+    pub struct SingboxRuleSetEntry {
+        tag: String,
+        url: String,
+        #[serde(default)]
+        add: Vec<String>,
+        #[serde(default)]
+        remove: Option<RuleSetRemove>,
+    }
+
+    impl SingboxRuleSetEntry {
+        pub fn tag(&self) -> &str {
+            &self.tag
+        }
+        pub fn url(&self) -> &str {
+            &self.url
+        }
+        pub fn add(&self) -> &[String] {
+            &self.add
+        }
+        pub fn remove(&self) -> Option<&RuleSetRemove> {
+            self.remove.as_ref()
+        }
+    }
+}
+
 mod upstream {
     use super::Deserialize;
     use crate::parser::share_config::OverridableValue;
@@ -455,6 +492,7 @@ mod configure {
 
     use crate::parser::ProxyGroup;
     use crate::parser::external_config::ExternalConfig;
+    use crate::parser::ruleset_config::SingboxRuleSetEntry;
 
     use anyhow::Context;
 
@@ -484,6 +522,8 @@ mod configure {
         additional_rules: Vec<String>,
         #[serde(default, alias = "singbox-config")]
         singbox_config: Option<String>,
+        #[serde(default, alias = "singbox-rule-set")]
+        singbox_rule_sets: Vec<SingboxRuleSetEntry>,
     }
 
     impl Configure {
@@ -524,6 +564,10 @@ mod configure {
 
         pub fn proxy_groups(&self) -> &Vec<ProxyGroup> {
             &self.proxy_groups
+        }
+
+        pub fn singbox_rule_sets(&self) -> &Vec<SingboxRuleSetEntry> {
+            &self.singbox_rule_sets
         }
 
         pub(crate) async fn load<P: AsRef<Path>>(
@@ -641,6 +685,7 @@ mod external_config {
 
 mod share_config {
     use super::{Keyword, Proxies, Rules};
+    use crate::parser::ruleset_config::SingboxRuleSetEntry;
     use crate::parser::{Configure, ProxyGroup, UpStream};
     use log::{debug, error, info};
     use serde::Deserialize;
@@ -766,6 +811,7 @@ mod share_config {
         test_url: String,
         manual_insert_proxies: Vec<String>,
         singbox_base: Option<serde_json::Value>,
+        singbox_rule_sets: Vec<SingboxRuleSetEntry>,
     }
 
     impl ShareConfig {
@@ -793,6 +839,7 @@ mod share_config {
                 redis_client,
                 groups: local_configure.proxy_groups().clone(),
                 test_url: local_configure.test_url(),
+                singbox_rule_sets: local_configure.singbox_rule_sets().clone(),
                 manual_insert_proxies: local_configure.need_added_proxy(),
                 singbox_base,
             };
@@ -843,6 +890,7 @@ mod share_config {
             self.proxies = local_configure.proxies().clone();
             self.groups = local_configure.proxy_groups().clone();
             self.test_url = local_configure.test_url();
+            self.singbox_rule_sets = local_configure.singbox_rule_sets().clone();
             self.manual_insert_proxies = local_configure.need_added_proxy();
             self.singbox_base = singbox_base;
             log::debug!("{}", self.briefing());
@@ -893,6 +941,10 @@ mod share_config {
         pub fn groups(&self) -> &Vec<ProxyGroup> {
             &self.groups
         }
+
+        pub fn singbox_rule_sets(&self) -> &[SingboxRuleSetEntry] {
+            &self.singbox_rule_sets
+        }
     }
 }
 
@@ -905,6 +957,7 @@ pub use proxies::{Proxies, Proxy};
 pub use proxy_groups::{ProxyGroup, ProxyGroups};
 pub use remote_configure::RemoteConfigure;
 pub use rules::Rules;
+pub use ruleset_config::RuleSetRemove;
 pub use share_config::{ShareConfig, UpdateConfigureEvent};
 pub use upstream::UpStream;
 

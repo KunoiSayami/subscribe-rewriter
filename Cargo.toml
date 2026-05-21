@@ -1,6 +1,6 @@
 [package]
 name = "subscribe-rewriter"
-version = "0.25.2"
+version = "0.26.0"
 edition = "2024"
 default-run = "subscribe-rewriter"
 
@@ -27,4 +27,5 @@ serde_yaml = "0.9"
 sha256 = "1"
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
+tempfile = "3"
 tower-http = { version = "^0.6", features = ["trace"] }

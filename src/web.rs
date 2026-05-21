@@ -2,6 +2,7 @@ pub mod v2 {
     use crate::apply_change;
     use crate::cache::{parse_remote_configure, read_or_fetch};
     use crate::parser::ShareConfig;
+    use crate::ruleset;
     use anyhow::{Context, Error};
     use axum::Extension;
     use axum::extract::{Path, Query};
@@ -146,6 +147,65 @@ pub mod v2 {
         Ok(response)
     }
 
+    fn bytes_error(code: u16, msg: &'static str) -> Response<axum::body::Body> {
+        Response::builder()
+            .status(code)
+            .body(axum::body::Body::from(msg))
+            .unwrap()
+    }
+
+    pub async fn get_rule_set(
+        Path(tag): Path<String>,
+        Extension(share_configure): Extension<Arc<RwLock<ShareConfig>>>,
+    ) -> impl IntoResponse {
+        let (url, add, remove) = {
+            let cfg = share_configure.read().await;
+            let entry = cfg
+                .singbox_rule_sets()
+                .iter()
+                .find(|e| e.tag() == tag)
+                .map(|e| (e.url().to_string(), e.add().to_vec(), e.remove().cloned()));
+            match entry {
+                Some(v) => v,
+                None => return bytes_error(404, "404 not found"),
+            }
+        };
+
+        let redis_key = format!("sr-ruleset-{}", sha256::digest(&url));
+        let redis_conn = share_configure.read().await.get_redis_connection().await;
+        let (content, _) = match read_or_fetch(&url, redis_key, redis_conn).await {
+            Ok(v) => v,
+            Err(_) => return bytes_error(500, "500 internal server error"),
+        };
+
+        let mut source: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Parse rule-set source JSON: {e:?}");
+                return bytes_error(500, "500 internal server error");
+            }
+        };
+
+        ruleset::patch_rule_set_source(&mut source, &add, remove.as_ref());
+
+        let bytes = match ruleset::compile_to_srs(&source).await {
+            Ok(b) => b,
+            Err(e) => {
+                error!("Compile rule-set {tag}: {e:?}");
+                return bytes_error(500, "500 internal server error");
+            }
+        };
+
+        Response::builder()
+            .header("content-type", "application/octet-stream")
+            .header(
+                "content-disposition",
+                format!("attachment; filename={tag}.srs"),
+            )
+            .body(axum::body::Body::from(bytes))
+            .unwrap()
+    }
+
     pub async fn get(
         Path(sub_id): Path<String>,
         Extension(share_configure): Extension<Arc<RwLock<ShareConfig>>>,
@@ -169,4 +229,5 @@ pub mod v2 {
 
 pub use current::ErrorCode;
 pub use current::get;
+pub use current::get_rule_set;
 pub use v2 as current;
