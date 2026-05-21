@@ -6,6 +6,7 @@ A proxy subscription rewriting service for Clash and sing-box. It fetches remote
 
 - **Subscription rewriting** — Fetches upstream Clash subscription configs and injects local proxies, custom rules, and additional proxy groups before serving them to clients.
 - **sing-box conversion** — Converts Surge-format upstream subscriptions into sing-box outbound JSON via `?method=singbox`. Supports trojan, VLESS (with Reality), and AnyTLS protocols. Optionally merges converted outbounds into a static sing-box config skeleton.
+- **sing-box rule-set serving** — Fetches remote sing-box rule-set source JSON files, applies local add/remove patches, compiles them to binary `.srs` format via `sing-box rule-set compile`, and serves them over HTTP. Useful for self-hosting rule-sets with local customisations.
 - **Custom proxy groups** — Define local proxy groups (select, relay, url-test) in the config. Supports `<PlaceHold>` placeholder resolution and per-subscription filtering via `apply_to` / `not_apply_to`.
 - **Dialer proxy chaining** — Local proxies can use `dialer-proxy: <PlaceHold>` to automatically chain through a matched upstream proxy group.
 - **Multi-subscription support** — Maps multiple `sub_id` paths to different upstream URLs, each with optional overrides (e.g. expiry, traffic limits).
@@ -40,6 +41,7 @@ clashrw [OPTIONS]
 | `GET /<prefix>/<sub_id>` | Returns the rewritten Clash YAML config. |
 | `GET /<prefix>/<sub_id>?method=raw` | Returns the raw upstream content without rewriting. |
 | `GET /<prefix>/<sub_id>?method=singbox` | Converts the `singbox` upstream (Surge-format) to a sing-box JSON config. Returns `406` if no `singbox` URL is configured for that subscription. |
+| `GET /rule-set/<tag>` | Fetches the upstream rule-set source JSON for `<tag>`, applies local add/remove patches, compiles it to a binary `.srs` file, and returns it as `application/octet-stream`. Returns `404` if the tag is not configured. |
 | `GET /` | Returns version and status info as JSON. |
 
 ## Configuration
@@ -121,16 +123,34 @@ additional_rules:
 # Health check URL
 test_url: "http://www.gstatic.com/generate_204"
 
-# Path to a sing-box JSON skeleton (optional)
-# When set, ?method=singbox prepends the selector + converted proxies to the
-# skeleton's existing outbounds array and returns the merged config.
-# If omitted, a minimal skeleton is generated automatically.
-singbox-config: "/etc/subscribe-rewriter/singbox-base.json"
+# sing-box settings (grouped)
+singbox:
+  # Path to a sing-box JSON skeleton (optional).
+  # When set, ?method=singbox prepends the selector + converted proxies to the
+  # skeleton's existing outbounds array and returns the merged config.
+  # If omitted, a minimal skeleton is generated automatically.
+  config_path: "/etc/subscribe-rewriter/singbox-base.json"
+
+  # Rule-sets to compile and serve at GET /rule-set/<tag>
+  rule_sets:
+    - tag: cn-domain
+      url: "https://example.com/cn-domain.json"
+      add:                              # optional: Clash-style rules to add
+        - DOMAIN-SUFFIX,corp.internal
+        - DOMAIN,local.dev
+      remove:                           # optional: rules to strip
+        keyword:                        # remove any value containing these substrings
+          - tracker
+          - ads
+        rules:                          # remove exact entries (Clash rule format)
+          - DOMAIN-SUFFIX,unwanted.example.com
 ```
+
+> **Backward compatibility:** the legacy flat keys `singbox-config` and `singbox_rule_set` are still accepted and are automatically migrated to the `singbox:` block on load.
 
 ### sing-box Base Config
 
-When `singbox-config` is set, the file must be a valid sing-box JSON config. The `outbounds` array in that file should contain your static entries (`direct`, `block`, `dns-out`, and any fixed outbounds). On each `?method=singbox` request the server prepends a `selector` group (containing all converted proxy tags) and the converted proxy outbounds to that array, leaving all other top-level keys (`log`, `dns`, `inbounds`, `route`, `experimental`, etc.) untouched.
+When `singbox.config_path` is set, the file must be a valid sing-box JSON config. The `outbounds` array in that file should contain your static entries (`direct`, `block`, `dns-out`, and any fixed outbounds). On each `?method=singbox` request the server prepends a `selector` group (containing all converted proxy tags) and the converted proxy outbounds to that array, leaving all other top-level keys (`log`, `dns`, `inbounds`, `route`, `experimental`, etc.) untouched.
 
 Example skeleton (`singbox-base.json`):
 
@@ -161,7 +181,30 @@ The resulting `outbounds` array served to the client will be:
 [ selector, <converted proxy 1>, <converted proxy 2>, ..., direct, block, dns-out ]
 ```
 
-If `singbox-config` is omitted, those three fixed outbounds are generated automatically and the rest of the config skeleton is minimal.
+If `singbox.config_path` is omitted, those three fixed outbounds are generated automatically and the rest of the config skeleton is minimal.
+
+### sing-box Rule-Set Serving
+
+Each entry in `singbox.rule_sets` is served at `GET /rule-set/<tag>` as a compiled binary `.srs` file. The server:
+
+1. Fetches the upstream sing-box rule-set source JSON (cached in Redis).
+2. Applies local `add` entries (Clash-style rule strings; outbound field is ignored).
+3. Applies local `remove` filters — `keyword` strips any rule value containing the substring; `rules` strips exact field+value matches parsed from Clash rule strings.
+4. Invokes `sing-box rule-set compile` to produce the binary `.srs` bytes.
+5. Returns the bytes as `Content-Type: application/octet-stream`.
+
+Reference the endpoint in a sing-box config as a remote binary rule-set:
+
+```json
+{
+  "type": "remote",
+  "tag": "cn-domain",
+  "format": "binary",
+  "url": "http://127.0.0.1:23365/rule-set/cn-domain"
+}
+```
+
+> **Requirement:** `sing-box` must be available on `PATH` for the compilation step.
 
 ### External Rules JSON Format
 

@@ -438,6 +438,15 @@ mod ruleset_config {
             self.remove.as_ref()
         }
     }
+
+    #[derive(Clone, Debug, Default, Deserialize)]
+    pub struct SingboxConfigure {
+        /// Path to the sing-box base JSON template file.
+        #[serde(default, alias = "config")]
+        pub config_path: Option<String>,
+        #[serde(default, alias = "rule_sets", alias = "rule-sets")]
+        pub rule_sets: Vec<SingboxRuleSetEntry>,
+    }
 }
 
 mod upstream {
@@ -492,13 +501,12 @@ mod configure {
 
     use crate::parser::ProxyGroup;
     use crate::parser::external_config::ExternalConfig;
-    use crate::parser::ruleset_config::SingboxRuleSetEntry;
+    use crate::parser::ruleset_config::{SingboxConfigure, SingboxRuleSetEntry};
 
     use anyhow::Context;
 
     use super::Deserialize;
     use super::{HttpServerConfigure, Keyword, Proxies, Rules, UpStream};
-    //use std::collections::HashMap;
 
     fn default_test_url() -> String {
         "http://www.gstatic.com/generate_204".into()
@@ -520,10 +528,10 @@ mod configure {
         proxy_groups: Vec<ProxyGroup>,
         #[serde(default, alias = "additional-rules")]
         additional_rules: Vec<String>,
-        #[serde(default, alias = "singbox-config")]
-        singbox_config: Option<String>,
-        #[serde(default, alias = "singbox-rule-set")]
-        singbox_rule_sets: Vec<SingboxRuleSetEntry>,
+        /// New grouped form: `singbox: { config: ..., rule_sets: [...] }`
+        /// Legacy flat keys (`singbox-config`, `singbox_rule_set`) are merged in `load()`.
+        #[serde(default)]
+        singbox: SingboxConfigure,
     }
 
     impl Configure {
@@ -537,17 +545,8 @@ mod configure {
             &self.keyword
         }
         pub fn singbox_config(&self) -> Option<&str> {
-            self.singbox_config.as_deref()
+            self.singbox.config_path.as_deref()
         }
-        /*pub fn get_url_maps(&self) -> HashMap<String, String> {
-            let mut m = HashMap::new();
-            if let Some(&test_urls) = self.test_urls {
-                for test_url in test_urls {
-                    m.insert(test_url.proxy().to_string(), test_url.url().to_string());
-                }
-            }
-            m
-        }*/
         pub fn test_url(&self) -> String {
             self.test_url.clone()
         }
@@ -567,19 +566,22 @@ mod configure {
         }
 
         pub fn singbox_rule_sets(&self) -> &Vec<SingboxRuleSetEntry> {
-            &self.singbox_rule_sets
+            &self.singbox.rule_sets
         }
 
         pub(crate) async fn load<P: AsRef<Path>>(
             p: P,
         ) -> anyhow::Result<(Self, Option<serde_json::Value>)> {
-            let mut ret = serde_yaml::from_str::<Self>(
+            // Support legacy flat keys by pre-processing the YAML value.
+            let raw: serde_yaml::Value = serde_yaml::from_str(
                 tokio::fs::read_to_string(p.as_ref())
                     .await
                     .context("read local config")?
                     .as_str(),
             )
-            .context("Parse configure")?;
+            .context("Parse configure as yaml")?;
+
+            let mut ret = Self::from_yaml(raw)?;
 
             let mut rules_count = 0;
 
@@ -620,6 +622,34 @@ mod configure {
             };
 
             Ok((ret, singbox_base))
+        }
+
+        /// Deserialize from a raw YAML value, hoisting legacy flat keys into `singbox`.
+        fn from_yaml(mut raw: serde_yaml::Value) -> anyhow::Result<Self> {
+            if let serde_yaml::Value::Mapping(ref mut map) = raw {
+                let config_key = serde_yaml::Value::String("singbox-config".into());
+                let rule_set_key = serde_yaml::Value::String("singbox_rule_set".into());
+                let singbox_key = serde_yaml::Value::String("singbox".into());
+
+                let legacy_config = map.remove(&config_key);
+                let legacy_rule_sets = map.remove(&rule_set_key);
+
+                if legacy_config.is_some() || legacy_rule_sets.is_some() {
+                    // Only migrate if there is no `singbox:` block already.
+                    if !map.contains_key(&singbox_key) {
+                        let mut singbox_map = serde_yaml::Mapping::new();
+                        if let Some(v) = legacy_config {
+                            singbox_map.insert(serde_yaml::Value::String("config_path".into()), v);
+                        }
+                        if let Some(v) = legacy_rule_sets {
+                            singbox_map.insert(serde_yaml::Value::String("rule_sets".into()), v);
+                        }
+                        map.insert(singbox_key, serde_yaml::Value::Mapping(singbox_map));
+                    }
+                }
+            }
+
+            serde_yaml::from_value(raw).context("Parse configure")
         }
     }
 }
