@@ -54,6 +54,7 @@ mod cache_ {
     use std::time::Duration;
 
     pub const CACHE_TIME: usize = 600;
+    pub const RULESET_CACHE_TIME: usize = 86400;
 
     async fn fetch_remote_file(url: &str) -> anyhow::Result<(String, String)> {
         let client = reqwest::ClientBuilder::new()
@@ -154,7 +155,41 @@ mod cache_ {
         }
         Ok((cache.content().to_string(), cache.remote_status()))
     }
+
+    /// Read compiled `.srs` bytes from Redis. Returns `None` on miss or cache disabled.
+    pub async fn read_srs_cache(
+        redis_key: &str,
+        redis_conn: &mut redis::aio::MultiplexedConnection,
+    ) -> Option<Vec<u8>> {
+        if *DISABLE_CACHE.get().unwrap_or(&false) {
+            return None;
+        }
+        redis_conn
+            .get::<_, Option<Vec<u8>>>(redis_key)
+            .await
+            .inspect_err(|e| warn!("[Can be safely ignored] read srs cache {redis_key:?}: {e:?}"))
+            .ok()
+            .flatten()
+    }
+
+    /// Write compiled `.srs` bytes to Redis with `RULESET_CACHE_TIME` TTL.
+    pub async fn write_srs_cache(
+        redis_key: &str,
+        bytes: &[u8],
+        redis_conn: redis::aio::MultiplexedConnection,
+    ) {
+        if *DISABLE_CACHE.get().unwrap_or(&false) {
+            return;
+        }
+        let mut conn = redis_conn;
+        conn.set_ex::<_, &[u8], ()>(redis_key, bytes, RULESET_CACHE_TIME as u64)
+            .await
+            .inspect_err(|e| warn!("[Can be safely ignored] write srs cache {redis_key:?}: {e:?}"))
+            .ok();
+    }
 }
 
-pub use cache_::{CACHE_TIME, parse_remote_configure, read_or_fetch};
+pub use cache_::{
+    CACHE_TIME, parse_remote_configure, read_or_fetch, read_srs_cache, write_srs_cache,
+};
 pub use file_cache::FileCache;

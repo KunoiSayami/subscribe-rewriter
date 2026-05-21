@@ -1,6 +1,6 @@
 pub mod v2 {
     use crate::apply_change;
-    use crate::cache::{parse_remote_configure, read_or_fetch};
+    use crate::cache::{parse_remote_configure, read_or_fetch, read_srs_cache, write_srs_cache};
     use crate::parser::ShareConfig;
     use crate::ruleset;
     use anyhow::{Context, Error};
@@ -158,7 +158,7 @@ pub mod v2 {
         Path(tag): Path<String>,
         Extension(share_configure): Extension<Arc<RwLock<ShareConfig>>>,
     ) -> impl IntoResponse {
-        let (url, add, remove) = {
+        let (url, add, remove, bin_path) = {
             let cfg = share_configure.read().await;
             let entry = cfg
                 .singbox_rule_sets()
@@ -166,14 +166,43 @@ pub mod v2 {
                 .find(|e| e.tag() == tag)
                 .map(|e| (e.url().to_string(), e.add().to_vec(), e.remove().cloned()));
             match entry {
-                Some(v) => v,
+                Some((url, add, remove)) => {
+                    (url, add, remove, cfg.singbox_bin_path().map(str::to_owned))
+                }
                 None => return bytes_error(404, "404 not found"),
             }
         };
 
-        let redis_key = format!("sr-ruleset-{}", sha256::digest(&url));
-        let redis_conn = share_configure.read().await.get_redis_connection().await;
-        let (content, _) = match read_or_fetch(&url, redis_key, redis_conn).await {
+        // Cache key covers the URL and all local patches so any config change busts the cache.
+        let patch_digest = sha256::digest(format!("{url}{add:?}{remove:?}"));
+        let srs_cache_key = format!("sr-srs-{patch_digest}");
+
+        let mut redis_conn = match share_configure.read().await.get_redis_connection().await {
+            Ok(c) => c,
+            Err(e) => {
+                error!("Redis connection for rule-set {tag}: {e:?}");
+                return bytes_error(500, "500 internal server error");
+            }
+        };
+
+        if let Some(cached) = read_srs_cache(&srs_cache_key, &mut redis_conn).await {
+            return Response::builder()
+                .header("content-type", "application/octet-stream")
+                .header(
+                    "content-disposition",
+                    format!("attachment; filename={tag}.srs"),
+                )
+                .body(axum::body::Body::from(cached))
+                .unwrap();
+        }
+
+        let (content, _) = match read_or_fetch(
+            &url,
+            format!("sr-ruleset-src-{}", sha256::digest(&url)),
+            Ok(redis_conn.clone()),
+        )
+        .await
+        {
             Ok(v) => v,
             Err(_) => return bytes_error(500, "500 internal server error"),
         };
@@ -188,13 +217,15 @@ pub mod v2 {
 
         ruleset::patch_rule_set_source(&mut source, &add, remove.as_ref());
 
-        let bytes = match ruleset::compile_to_srs(&source).await {
+        let bytes = match ruleset::compile_to_srs(&source, bin_path.as_deref()).await {
             Ok(b) => b,
             Err(e) => {
                 error!("Compile rule-set {tag}: {e:?}");
                 return bytes_error(500, "500 internal server error");
             }
         };
+
+        write_srs_cache(&srs_cache_key, &bytes, redis_conn).await;
 
         Response::builder()
             .header("content-type", "application/octet-stream")

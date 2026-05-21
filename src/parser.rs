@@ -446,6 +446,9 @@ mod ruleset_config {
         pub config_path: Option<String>,
         #[serde(default, alias = "rule_sets", alias = "rule-sets")]
         pub rule_sets: Vec<SingboxRuleSetEntry>,
+        /// Override the sing-box executable path. Falls back to PATH lookup if unset.
+        #[serde(default, alias = "bin-path")]
+        pub bin_path: Option<String>,
     }
 }
 
@@ -567,6 +570,10 @@ mod configure {
 
         pub fn singbox_rule_sets(&self) -> &Vec<SingboxRuleSetEntry> {
             &self.singbox.rule_sets
+        }
+
+        pub fn singbox_bin_path(&self) -> Option<&str> {
+            self.singbox.bin_path.as_deref()
         }
 
         pub(crate) async fn load<P: AsRef<Path>>(
@@ -841,6 +848,7 @@ mod share_config {
         test_url: String,
         manual_insert_proxies: Vec<String>,
         singbox_base: Option<serde_json::Value>,
+        singbox_bin_path: Option<String>,
         singbox_rule_sets: Vec<SingboxRuleSetEntry>,
     }
 
@@ -870,6 +878,7 @@ mod share_config {
                 groups: local_configure.proxy_groups().clone(),
                 test_url: local_configure.test_url(),
                 singbox_rule_sets: local_configure.singbox_rule_sets().clone(),
+                singbox_bin_path: local_configure.singbox_bin_path().map(str::to_owned),
                 manual_insert_proxies: local_configure.need_added_proxy(),
                 singbox_base,
             };
@@ -921,6 +930,7 @@ mod share_config {
             self.groups = local_configure.proxy_groups().clone();
             self.test_url = local_configure.test_url();
             self.singbox_rule_sets = local_configure.singbox_rule_sets().clone();
+            self.singbox_bin_path = local_configure.singbox_bin_path().map(str::to_owned);
             self.manual_insert_proxies = local_configure.need_added_proxy();
             self.singbox_base = singbox_base;
             log::debug!("{}", self.briefing());
@@ -928,6 +938,10 @@ mod share_config {
 
         pub fn singbox_base(&self) -> Option<&serde_json::Value> {
             self.singbox_base.as_ref()
+        }
+
+        pub fn singbox_bin_path(&self) -> Option<&str> {
+            self.singbox_bin_path.as_deref()
         }
 
         pub fn briefing(&self) -> String {

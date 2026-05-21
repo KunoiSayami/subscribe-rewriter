@@ -79,8 +79,8 @@ pub fn patch_rule_set_source(source: &mut Value, add: &[String], remove: Option<
 }
 
 /// Compile a sing-box rule-set source JSON to binary `.srs` bytes by invoking
-/// `sing-box rule-set compile`.
-pub async fn compile_to_srs(source: &Value) -> anyhow::Result<Vec<u8>> {
+/// `sing-box rule-set compile`. `bin_path` overrides the executable; falls back to PATH lookup.
+pub async fn compile_to_srs(source: &Value, bin_path: Option<&str>) -> anyhow::Result<Vec<u8>> {
     let mut input = NamedTempFile::with_suffix(".json").context("create temp input file")?;
     let json_bytes = serde_json::to_vec(source).context("serialize rule-set source")?;
     input
@@ -92,7 +92,8 @@ pub async fn compile_to_srs(source: &Value) -> anyhow::Result<Vec<u8>> {
     let input_path = input.path().to_owned();
     let output_path = output.path().to_owned();
 
-    let result = tokio::process::Command::new("sing-box")
+    let exe = bin_path.unwrap_or("sing-box");
+    let result = tokio::process::Command::new(exe)
         .args([
             "rule-set",
             "compile",
@@ -102,11 +103,11 @@ pub async fn compile_to_srs(source: &Value) -> anyhow::Result<Vec<u8>> {
         ])
         .output()
         .await
-        .context("spawn sing-box")?;
+        .with_context(|| format!("spawn {exe}"))?;
 
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
-        anyhow::bail!("sing-box rule-set compile failed: {stderr}");
+        anyhow::bail!("{exe} rule-set compile failed: {stderr}");
     }
 
     let bytes = tokio::fs::read(&output_path)
