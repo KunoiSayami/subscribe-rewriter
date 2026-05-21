@@ -12,7 +12,7 @@ A proxy subscription rewriting service for Clash and sing-box. It fetches remote
 - **Multi-subscription support** — Maps multiple `sub_id` paths to different upstream URLs, each with optional overrides (e.g. expiry, traffic limits).
 - **Redis caching** — Caches fetched upstream configs in Redis (default TTL: 600s) to reduce redundant requests. Can be disabled with `--nocache`.
 - **External rules** — Import rules from external JSON config files via the `additional_rules` field, with support for domain, domain-suffix, and domain-regex rule types.
-- **Hot reload** — Watches the config file for changes and reloads automatically without restarting the server.
+- **Hot reload** — Watches both the config file and the sing-box base JSON file for changes and reloads automatically without restarting the server. If `singbox.config_path` changes between reloads, the watcher is restarted on the new path.
 - **Raw passthrough** — Supports a `?method=raw` query parameter to return the upstream content unmodified (useful for non-Clash clients like Quantumult X).
 - **Per-subscription passthrough** — Set `passthrough: true` on an upstream entry to always return its content as-is, without any rewriting, regardless of the query method.
 - **Local file serving** — The `upstream`, `raw`, and `singbox` fields accept local filesystem paths. If the path exists as a file, it is read directly instead of fetched over HTTP.
@@ -42,6 +42,9 @@ clashrw [OPTIONS]
 | `GET /<prefix>/<sub_id>?method=raw` | Returns the raw upstream content without rewriting. |
 | `GET /<prefix>/<sub_id>?method=singbox` | Converts the `singbox` upstream (Surge-format) to a sing-box JSON config. Returns `406` if no `singbox` URL is configured for that subscription. |
 | `GET /rule-set/<tag>` | Fetches the upstream rule-set source JSON for `<tag>`, applies local add/remove patches, compiles it to a binary `.srs` file, and returns it as `application/octet-stream`. Returns `404` if the tag is not configured. |
+| `GET /rule-set/<tag>.srs` | Same as above (explicit `.srs` suffix). |
+| `GET /rule-set/<tag>.json` | Returns the patched rule-set source as pretty-printed JSON instead of compiling to binary. |
+| `GET /rule-set/<tag>?raw` | Same as the `.json` form — returns the raw JSON source. |
 | `GET /` | Returns version and status info as JSON. |
 
 ## Configuration
@@ -155,6 +158,10 @@ singbox:
 ### sing-box Base Config
 
 When `singbox.config_path` is set, the file must be a valid sing-box JSON config. The `outbounds` array in that file should contain your static entries (`direct`, `block`, `dns-out`, and any fixed outbounds). On each `?method=singbox` request the server prepends a `selector` group (containing all converted proxy tags) and the converted proxy outbounds to that array, leaving all other top-level keys (`log`, `dns`, `inbounds`, `route`, `experimental`, etc.) untouched.
+
+Outbounds that use `{all}`, `{config_proxy}`, or `{upstream_proxy}` placeholders are expanded at request time using the converted proxy list. If a placeholder expands to an empty list (e.g. because a keyword filter matches nothing in the current subscription), that outbound is removed from the result and any references to its tag in other outbounds are pruned — preventing sing-box from rejecting the config due to empty outbound lists.
+
+On load, the server cross-validates all rules in `config.yaml` against the outbound tags declared in the sing-box base config. Any rule whose target outbound does not exist as a tag in the base config emits a warning in the log. This check runs on both initial load and every hot reload of either file.
 
 Example skeleton (`singbox-base.json`):
 

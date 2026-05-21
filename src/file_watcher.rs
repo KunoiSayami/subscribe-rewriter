@@ -17,6 +17,7 @@ mod v1 {
             file: String,
             stop_signal_channel: oneshot::Receiver<bool>,
             sender: tokio::sync::mpsc::Sender<UpdateConfigureEvent>,
+            event: UpdateConfigureEvent,
         ) -> Option<()> {
             let path = PathBuf::from(&file)
                 .canonicalize()
@@ -31,11 +32,13 @@ mod v1 {
             let file_name = path.file_name()?.to_os_string();
 
             let mut watcher = notify::recommended_watcher(move |res| match res {
-                Ok(event) => {
-                    if Self::decide(&file_name, &event) {
+                Ok(ev) => {
+                    if Self::decide(&file_name, &ev) {
                         tokio::runtime::Builder::new_current_thread()
                             .build()
-                            .map(|runtime| runtime.block_on(Self::send_event(sender.clone())))
+                            .map(|runtime| {
+                                runtime.block_on(Self::send_event(sender.clone(), event.clone()))
+                            })
                             .inspect_err(|e| {
                                 error!("[Can be safely ignored] Unable create runtime: {e:?}")
                             })
@@ -89,9 +92,12 @@ mod v1 {
             event.need_rescan()
         }
 
-        async fn send_event(sender: tokio::sync::mpsc::Sender<UpdateConfigureEvent>) -> Option<()> {
+        async fn send_event(
+            sender: tokio::sync::mpsc::Sender<UpdateConfigureEvent>,
+            event: UpdateConfigureEvent,
+        ) -> Option<()> {
             sender
-                .send(UpdateConfigureEvent::NeedUpdate)
+                .send(event)
                 .await
                 .inspect_err(|_| {
                     error!("[Can be safely ignored] Got error while sending event to update thread")
@@ -103,9 +109,17 @@ mod v1 {
             path: String,
             sender: tokio::sync::mpsc::Sender<UpdateConfigureEvent>,
         ) -> Self {
+            Self::start_with_event(path, sender, UpdateConfigureEvent::NeedUpdate)
+        }
+
+        pub fn start_with_event(
+            path: String,
+            sender: tokio::sync::mpsc::Sender<UpdateConfigureEvent>,
+            event: UpdateConfigureEvent,
+        ) -> Self {
             let (stop_signal_channel, receiver) = oneshot::channel();
             Self {
-                handler: std::thread::spawn(|| Self::file_watching(path, receiver, sender)),
+                handler: std::thread::spawn(|| Self::file_watching(path, receiver, sender, event)),
                 stop_signal_channel,
             }
         }

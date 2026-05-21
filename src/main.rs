@@ -228,6 +228,7 @@ async fn async_main(
         configure_path,
         arc_configure,
         file_update_receiver,
+        file_update_sender.clone(),
     ));
 
     tokio::select! {

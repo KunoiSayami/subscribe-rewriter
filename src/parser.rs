@@ -750,6 +750,7 @@ mod share_config {
     #[derive(Clone, Debug)]
     pub enum UpdateConfigureEvent {
         NeedUpdate,
+        SingboxJsonUpdated,
         Terminate,
     }
 
@@ -865,6 +866,7 @@ mod share_config {
         test_url: String,
         manual_insert_proxies: Vec<String>,
         singbox_base: Option<serde_json::Value>,
+        singbox_config_path: Option<String>,
         singbox_bin_path: Option<String>,
         singbox_rule_sets: Vec<SingboxRuleSetEntry>,
     }
@@ -896,6 +898,7 @@ mod share_config {
                 test_url: local_configure.test_url(),
                 singbox_rule_sets: local_configure.singbox_rule_sets().clone(),
                 singbox_bin_path: local_configure.singbox_bin_path().map(str::to_owned),
+                singbox_config_path: local_configure.singbox_config().map(str::to_owned),
                 manual_insert_proxies: local_configure.need_added_proxy(),
                 singbox_base,
             };
@@ -948,6 +951,7 @@ mod share_config {
             self.test_url = local_configure.test_url();
             self.singbox_rule_sets = local_configure.singbox_rule_sets().clone();
             self.singbox_bin_path = local_configure.singbox_bin_path().map(str::to_owned);
+            self.singbox_config_path = local_configure.singbox_config().map(str::to_owned);
             self.manual_insert_proxies = local_configure.need_added_proxy();
             self.singbox_base = singbox_base;
             log::debug!("{}", self.briefing());
@@ -955,6 +959,31 @@ mod share_config {
 
         pub fn singbox_base(&self) -> Option<&serde_json::Value> {
             self.singbox_base.as_ref()
+        }
+
+        pub fn singbox_config_path(&self) -> Option<&str> {
+            self.singbox_config_path.as_deref()
+        }
+
+        pub fn update_singbox_base(&mut self, singbox_base: Option<serde_json::Value>) {
+            if let Some(ref base) = singbox_base {
+                let known_tags: std::collections::HashSet<&str> = base["outbounds"]
+                    .as_array()
+                    .map(|arr| arr.iter().filter_map(|v| v["tag"].as_str()).collect())
+                    .unwrap_or_default();
+                for rule in self.rules.get_element() {
+                    if let Some(r) = crate::singbox::parse_clash_rule(&rule) {
+                        if r.outbound != "direct" && !known_tags.contains(r.outbound.as_str()) {
+                            log::warn!(
+                                "Rule target '{}' has no matching outbound in singbox base config",
+                                r.outbound
+                            );
+                        }
+                    }
+                }
+            }
+            self.singbox_base = singbox_base;
+            info!("Reloaded singbox base config.");
         }
 
         pub fn singbox_bin_path(&self) -> Option<&str> {
@@ -976,7 +1005,25 @@ mod share_config {
             configure_path: String,
             configure_file: Arc<RwLock<ShareConfig>>,
             mut receiver: tokio::sync::mpsc::Receiver<UpdateConfigureEvent>,
+            event_sender: tokio::sync::mpsc::Sender<UpdateConfigureEvent>,
         ) {
+            use crate::file_watcher::FileWatchDog;
+
+            // Start a watcher for the singbox JSON file if a path is configured.
+            // Kept as Option so we can stop/restart it when the path changes.
+            let initial_singbox_path = configure_file
+                .read()
+                .await
+                .singbox_config_path()
+                .map(str::to_owned);
+            let mut singbox_watcher: Option<FileWatchDog> = initial_singbox_path.map(|p| {
+                FileWatchDog::start_with_event(
+                    p,
+                    event_sender.clone(),
+                    UpdateConfigureEvent::SingboxJsonUpdated,
+                )
+            });
+
             while let Some(event) = receiver.recv().await {
                 match event {
                     UpdateConfigureEvent::NeedUpdate => {
@@ -986,12 +1033,54 @@ mod share_config {
                                 error!("[Can be safely ignored] Load configure: {e:?}")
                             })
                         {
+                            // Restart singbox watcher if the path changed.
+                            let new_path = new_cfg.singbox_config().map(str::to_owned);
+                            let old_path = cfg.singbox_config_path().map(str::to_owned);
+                            if new_path != old_path {
+                                if let Some(w) = singbox_watcher.take() {
+                                    w.stop();
+                                }
+                                singbox_watcher = new_path.map(|p| {
+                                    FileWatchDog::start_with_event(
+                                        p,
+                                        event_sender.clone(),
+                                        UpdateConfigureEvent::SingboxJsonUpdated,
+                                    )
+                                });
+                            }
                             cfg.update(new_cfg, singbox_base);
                             info!("Reloaded local configure file.");
                         };
                     }
+                    UpdateConfigureEvent::SingboxJsonUpdated => {
+                        let path = {
+                            let cfg = configure_file.read().await;
+                            cfg.singbox_config_path().map(str::to_owned)
+                        };
+                        if let Some(path) = path {
+                            let singbox_base = match tokio::fs::read_to_string(&path).await {
+                                Ok(s) => serde_json::from_str::<serde_json::Value>(&s)
+                                    .inspect_err(|e| {
+                                        log::warn!("Parse singbox config {path}: {e:?}")
+                                    })
+                                    .ok(),
+                                Err(e) => {
+                                    log::warn!("Read singbox config {path}: {e:?}");
+                                    None
+                                }
+                            };
+                            configure_file
+                                .write()
+                                .await
+                                .update_singbox_base(singbox_base);
+                        }
+                    }
                     UpdateConfigureEvent::Terminate => break,
                 }
+            }
+
+            if let Some(w) = singbox_watcher.take() {
+                w.stop();
             }
             debug!("File updater exited!");
         }
