@@ -154,10 +154,17 @@ pub mod v2 {
             .unwrap()
     }
 
+    #[derive(Deserialize)]
+    pub struct RuleSetParams {
+        raw: Option<String>,
+    }
+
     pub async fn get_rule_set(
         Path(tag): Path<String>,
         Extension(share_configure): Extension<Arc<RwLock<ShareConfig>>>,
+        params: Query<RuleSetParams>,
     ) -> impl IntoResponse {
+        let return_raw = params.raw.is_some();
         let (url, add, remove, bin_path) = {
             let cfg = share_configure.read().await;
             let entry = cfg
@@ -185,15 +192,17 @@ pub mod v2 {
             }
         };
 
-        if let Some(cached) = read_srs_cache(&srs_cache_key, &mut redis_conn).await {
-            return Response::builder()
-                .header("content-type", "application/octet-stream")
-                .header(
-                    "content-disposition",
-                    format!("attachment; filename={tag}.srs"),
-                )
-                .body(axum::body::Body::from(cached))
-                .unwrap();
+        if !return_raw {
+            if let Some(cached) = read_srs_cache(&srs_cache_key, &mut redis_conn).await {
+                return Response::builder()
+                    .header("content-type", "application/octet-stream")
+                    .header(
+                        "content-disposition",
+                        format!("attachment; filename={tag}.srs"),
+                    )
+                    .body(axum::body::Body::from(cached))
+                    .unwrap();
+            }
         }
 
         let (content, _) = match read_or_fetch(
@@ -216,6 +225,24 @@ pub mod v2 {
         };
 
         ruleset::patch_rule_set_source(&mut source, &add, remove.as_ref());
+
+        if return_raw {
+            let json = match serde_json::to_string_pretty(&source) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("Serialize rule-set JSON for {tag}: {e:?}");
+                    return bytes_error(500, "500 internal server error");
+                }
+            };
+            return Response::builder()
+                .header("content-type", "application/json")
+                .header(
+                    "content-disposition",
+                    format!("attachment; filename={tag}.json"),
+                )
+                .body(axum::body::Body::from(json))
+                .unwrap();
+        }
 
         let bytes = match ruleset::compile_to_srs(&source, bin_path.as_deref()).await {
             Ok(b) => b,
