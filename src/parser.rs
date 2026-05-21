@@ -616,7 +616,7 @@ mod configure {
 
             let singbox_base = if let Some(path) = ret.singbox_config() {
                 match tokio::fs::read_to_string(path).await {
-                    Ok(s) => serde_json::from_str(&s)
+                    Ok(s) => serde_json::from_str::<serde_json::Value>(&s)
                         .inspect_err(|e| log::warn!("Parse singbox config {path}: {e:?}"))
                         .ok(),
                     Err(e) => {
@@ -627,6 +627,23 @@ mod configure {
             } else {
                 None
             };
+
+            if let Some(ref base) = singbox_base {
+                let known_tags: std::collections::HashSet<&str> = base["outbounds"]
+                    .as_array()
+                    .map(|arr| arr.iter().filter_map(|v| v["tag"].as_str()).collect())
+                    .unwrap_or_default();
+                for rule in ret.rules.get_element() {
+                    if let Some(r) = crate::singbox::parse_clash_rule(&rule) {
+                        if r.outbound != "direct" && !known_tags.contains(r.outbound.as_str()) {
+                            log::warn!(
+                                "Rule target '{}' has no matching outbound in singbox base config",
+                                r.outbound
+                            );
+                        }
+                    }
+                }
+            }
 
             Ok((ret, singbox_base))
         }

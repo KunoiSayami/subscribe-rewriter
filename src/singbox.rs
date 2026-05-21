@@ -375,6 +375,16 @@ fn expand_all(entry: &mut Value, proxy_tags: &[String], config_tags: &[String]) 
 /// - `selector`: if absent, a new one with `default: "urltest"` is prepended.
 /// - `urltest`: if absent, a new one with all proxy tags is prepended.
 /// - Converted proxy outbounds are appended at the end.
+/// Returns true if this outbound was produced by expanding a placeholder
+/// (`{all}`, `{config_proxy}`, or `{upstream_proxy}`). Only expanded outbounds
+/// can legitimately end up empty, so we only prune those.
+fn was_expanded(entry: &Value) -> bool {
+    // After expand_all the "filter" key is removed from expanded entries.
+    // We mark them during expansion instead by checking whether the type is
+    // selector/urltest (the only types that carry an outbounds list in configs).
+    matches!(type_of(entry), Some("selector") | Some("urltest")) && entry.get("filter").is_none()
+}
+
 fn merge_outbounds(
     mut existing: Vec<Value>,
     proxy_tags: &[String],
@@ -387,6 +397,30 @@ fn merge_outbounds(
 
     for entry in existing.iter_mut() {
         expand_all(entry, proxy_tags, config_tags);
+    }
+
+    // Collect tags of expanded outbounds whose outbounds list is now empty.
+    let empty_tags: std::collections::HashSet<String> = existing
+        .iter()
+        .filter(|e| {
+            was_expanded(e)
+                && e["outbounds"]
+                    .as_array()
+                    .map(|a| a.is_empty())
+                    .unwrap_or(false)
+        })
+        .filter_map(|e| tag_of(e).map(|t| t.to_string()))
+        .collect();
+
+    if !empty_tags.is_empty() {
+        // Remove cross-references to empty outbounds from all other entries.
+        for entry in existing.iter_mut() {
+            if let Some(arr) = entry["outbounds"].as_array_mut() {
+                arr.retain(|v| v.as_str().map(|t| !empty_tags.contains(t)).unwrap_or(true));
+            }
+        }
+        // Remove the empty outbounds themselves.
+        existing.retain(|e| tag_of(e).map(|t| !empty_tags.contains(t)).unwrap_or(true));
     }
 
     if !has_direct {
@@ -818,6 +852,37 @@ mod tests {
         let direct_rule = combined.iter().find(|r| r["outbound"] == "direct").unwrap();
         let cidrs = direct_rule["ip_cidr"].as_array().unwrap();
         assert!(cidrs.contains(&json!("10.0.0.0/8")));
+    }
+
+    #[test]
+    fn empty_expanded_outbound_is_removed_with_cross_refs() {
+        // "hk-only" will expand to nothing (no HK nodes in subscription).
+        // "main" references "hk-only" — that reference must be pruned too.
+        let raw = "trojan=h.example.com:443, password=pw, tls-host=s.example.com, over-tls=true, tls-verification=false, tag=JP Node\n";
+        let base = json!({
+            "outbounds": [
+                {
+                    "type": "selector", "tag": "hk-only", "outbounds": ["{all}"],
+                    "filter": [{"action": "include", "keywords": ["HK|香港"]}]
+                },
+                {
+                    "type": "selector", "tag": "main",
+                    "outbounds": ["hk-only", "🎯 全球直连"]
+                },
+                {"type": "direct", "tag": "🎯 全球直连"},
+            ],
+        });
+        let cfg = convert(raw, Some(&base), &[], &[], &[]);
+        let obs = cfg["outbounds"].as_array().unwrap();
+
+        // "hk-only" must be absent.
+        assert!(obs.iter().all(|v| v["tag"] != "hk-only"));
+
+        // "main" must no longer reference "hk-only".
+        let main = find_by_tag(obs, "main");
+        let main_outs = main["outbounds"].as_array().unwrap();
+        assert!(!main_outs.contains(&json!("hk-only")));
+        assert!(main_outs.contains(&json!("🎯 全球直连")));
     }
 
     #[test]
