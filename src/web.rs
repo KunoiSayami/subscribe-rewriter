@@ -164,7 +164,14 @@ pub mod v2 {
         Extension(share_configure): Extension<Arc<RwLock<ShareConfig>>>,
         params: Query<RuleSetParams>,
     ) -> impl IntoResponse {
-        let return_raw = params.raw.is_some();
+        let (tag, return_raw) = if let Some(stem) = tag.strip_suffix(".json") {
+            (stem.to_string(), true)
+        } else if let Some(stem) = tag.strip_suffix(".srs") {
+            (stem.to_string(), false)
+        } else {
+            (tag, params.raw.is_some())
+        };
+
         let (url, add, remove, bin_path) = {
             let cfg = share_configure.read().await;
             let entry = cfg
