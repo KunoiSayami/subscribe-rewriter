@@ -15,6 +15,7 @@ pub mod v2 {
     #[derive(Deserialize)]
     pub struct QueryParams {
         method: Option<String>,
+        log: Option<String>,
     }
 
     #[derive(Clone)]
@@ -61,6 +62,7 @@ pub mod v2 {
     async fn sub_process(
         sub_id: String,
         method: &str,
+        log_level: Option<String>,
         share_config: Arc<RwLock<ShareConfig>>,
     ) -> Result<Response<String>, ErrorCode> {
         let share_config = share_config.read().await;
@@ -103,13 +105,22 @@ pub mod v2 {
                 format!("attachment; filename=Clash_sample.yaml"),
             )
         } else if method.eq("singbox") {
-            let cfg = crate::singbox::convert(
+            let mut cfg = crate::singbox::convert(
                 &content,
                 share_config.singbox_base(),
                 share_config.proxies().get_vec(),
                 &share_config.rules().get_element(),
                 share_config.manual_insert_proxies(),
             );
+            if let Some(level) = log_level {
+                let level = match level.to_ascii_lowercase().as_str() {
+                    v @ ("trace" | "debug" | "info" | "warn" | "error" | "fatal" | "panic") => {
+                        v.to_string()
+                    }
+                    _ => "info".to_string(),
+                };
+                cfg["log"]["level"] = serde_json::json!(level);
+            }
             let json =
                 serde_json::to_string_pretty(&cfg).context("Serialize singbox json failed")?;
             (json, format!("attachment; filename=singbox_{sub_id}.json"))
@@ -143,6 +154,7 @@ pub mod v2 {
         sub_process(
             sub_id,
             &params.method.clone().unwrap_or_default(),
+            params.log.clone(),
             share_configure,
         )
         .await
