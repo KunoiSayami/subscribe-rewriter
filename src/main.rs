@@ -37,6 +37,7 @@ const DEFAULT_SUB_PREFIX: &str = "sub";
 static DISABLE_CACHE: OnceLock<bool> = OnceLock::new();
 static URL_TEST_INTERVAL: OnceLock<u64> = OnceLock::new();
 static SUB_PREFIX: OnceLock<String> = OnceLock::new();
+static SHOW_CACHE: OnceLock<bool> = OnceLock::new();
 
 pub fn get_name(value: &serde_yaml::Value) -> Option<String> {
     if let serde_yaml::Value::Mapping(map) = value
@@ -256,6 +257,37 @@ async fn async_main(
     Ok(())
 }
 
+fn init_log(verbose: u8, systemd: bool) {
+    let mut binding = env_logger::Builder::from_default_env();
+
+    SHOW_CACHE.set(verbose >= 1).unwrap();
+
+    if verbose < 2 {
+        binding
+            .filter_module("rustls", LevelFilter::Warn)
+            .filter_module("reqwest", LevelFilter::Warn);
+    }
+
+    if verbose < 3 {
+        binding
+            .filter_module("h2", LevelFilter::Warn)
+            .filter_module("hyper_util", LevelFilter::Warn)
+            .filter_module("tower_http", LevelFilter::Warn);
+    }
+
+    if verbose < 4 {
+        binding
+            .filter_module("mio", LevelFilter::Warn)
+            .filter_module("notify", LevelFilter::Warn)
+            .filter_module("tracing", LevelFilter::Warn);
+    }
+
+    if systemd {
+        binding.format(|buf, record| writeln!(buf, "[{}] - {}", record.level(), record.args()));
+    }
+    binding.init();
+}
+
 fn main() -> anyhow::Result<()> {
     let matches = command!()
         .args(&[
@@ -268,22 +300,11 @@ fn main() -> anyhow::Result<()> {
             arg!(--nocache "Disable cache"),
             arg!(--prefix [prefix] "Override server default prefix")
                 .default_value(DEFAULT_SUB_PREFIX),
+            arg!(-v --verbose ... "Show more logs"),
         ])
         .get_matches();
 
-    let mut binding = env_logger::Builder::from_default_env();
-    binding
-        .filter_module("rustls", LevelFilter::Warn)
-        .filter_module("reqwest", LevelFilter::Warn)
-        .filter_module("h2", LevelFilter::Warn)
-        .filter_module("tower_http", LevelFilter::Warn)
-        .filter_module("mio", LevelFilter::Warn)
-        .filter_module("notify", LevelFilter::Warn)
-        .filter_module("tracing", LevelFilter::Warn);
-    if matches.get_flag("systemd") {
-        binding.format(|buf, record| writeln!(buf, "[{}] - {}", record.level(), record.args()));
-    }
-    binding.init();
+    init_log(matches.get_count("verbose"), matches.get_flag("systemd"));
 
     DISABLE_CACHE.set(matches.get_flag("nocache")).unwrap();
     URL_TEST_INTERVAL

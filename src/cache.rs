@@ -45,9 +45,9 @@ mod file_cache {
 
 mod cache_ {
     use super::FileCache;
-    use crate::DISABLE_CACHE;
     use crate::parser::RemoteConfigure;
     use crate::web::ErrorCode;
+    use crate::{DISABLE_CACHE, SHOW_CACHE};
     use anyhow::Context;
     use log::{debug, error, trace, warn};
     use redis::AsyncCommands;
@@ -128,7 +128,9 @@ mod cache_ {
                             .ok().flatten();
                     if let Some(cache) = read_cache(cache) {
                         debug!("Cache: Read from cache");
-                        //trace!("Cache: Content => {cache:?}");
+                        if *SHOW_CACHE.get().unwrap_or(&false) {
+                            trace!("Cache: Content => {cache:?}");
+                        }
                         return Ok((cache.content().to_string(), cache.remote_status()));
                     }
                 }
