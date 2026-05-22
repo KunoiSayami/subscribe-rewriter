@@ -390,8 +390,9 @@ fn merge_outbounds(
     proxy_tags: &[String],
     config_tags: &[String],
     proxies: Vec<Value>,
+    direct_tag: &str,
 ) -> Vec<Value> {
-    let has_direct = existing.iter().any(|v| type_of(v) == Some("direct"));
+    let has_direct = existing.iter().any(|v| tag_of(v) == Some(direct_tag));
     let has_selector = existing.iter().any(|v| type_of(v) == Some("selector"));
     let has_urltest = existing.iter().any(|v| type_of(v) == Some("urltest"));
 
@@ -424,7 +425,7 @@ fn merge_outbounds(
     }
 
     if !has_direct {
-        existing.insert(0, json!({"type": "direct", "tag": "direct"}));
+        existing.insert(0, json!({"type": "direct", "tag": direct_tag}));
     }
     if !has_urltest {
         existing.insert(
@@ -456,7 +457,12 @@ pub(crate) struct ClashRule {
 ///
 /// Supported types: DOMAIN, DOMAIN-SUFFIX, DOMAIN-KEYWORD, DOMAIN-REGEX,
 /// IP-CIDR, IP-CIDR6. Returns `None` for unsupported types.
+#[allow(dead_code)]
 pub(crate) fn parse_clash_rule(rule: &str) -> Option<ClashRule> {
+    parse_clash_rule_with_direct(rule, "direct")
+}
+
+pub(crate) fn parse_clash_rule_with_direct(rule: &str, direct_tag: &str) -> Option<ClashRule> {
     let rule = rule.trim().split('#').next()?.trim();
     let parts: Vec<&str> = rule.splitn(4, ',').map(str::trim).collect();
     if parts.len() < 3 {
@@ -464,7 +470,7 @@ pub(crate) fn parse_clash_rule(rule: &str) -> Option<ClashRule> {
     }
     let (kind, value, outbound) = (parts[0], parts[1], parts[2]);
     let outbound = if outbound.eq_ignore_ascii_case("direct") {
-        "direct".to_string()
+        direct_tag.to_string()
     } else {
         outbound.to_string()
     };
@@ -488,7 +494,7 @@ pub(crate) fn parse_clash_rule(rule: &str) -> Option<ClashRule> {
 /// Rules targeting the same outbound are merged into a single rule object,
 /// accumulating values per field (OR within a field). This mirrors sing-box's
 /// own default-rule AND-across-fields / OR-within-field semantics.
-fn combine_clash_rules(clash_rules: &[String]) -> Vec<Value> {
+fn combine_clash_rules(clash_rules: &[String], direct_tag: &str) -> Vec<Value> {
     // Accumulate: outbound → field → [values]
     // Use a Vec to preserve first-seen insertion order per outbound.
     let mut order: Vec<String> = Vec::new();
@@ -498,7 +504,7 @@ fn combine_clash_rules(clash_rules: &[String]) -> Vec<Value> {
     > = std::collections::HashMap::new();
 
     for raw in clash_rules {
-        let Some(r) = parse_clash_rule(raw) else {
+        let Some(r) = parse_clash_rule_with_direct(raw, direct_tag) else {
             continue;
         };
         if !map.contains_key(&r.outbound) {
@@ -527,8 +533,8 @@ fn combine_clash_rules(clash_rules: &[String]) -> Vec<Value> {
 
 /// Merge converted Clash rules into the `route.rules` array of the config.
 /// New rules are prepended before any existing ones so they take priority.
-fn merge_rules(cfg: &mut Value, clash_rules: &[String]) {
-    let new_rules = combine_clash_rules(clash_rules);
+fn merge_rules(cfg: &mut Value, clash_rules: &[String], direct_tag: &str) {
+    let new_rules = combine_clash_rules(clash_rules, direct_tag);
 
     if new_rules.is_empty() {
         return;
@@ -577,6 +583,7 @@ pub fn convert(
     extra: &[serde_yaml::Value],
     clash_rules: &[String],
     placeholder_detour: &[String],
+    direct_tag: &str,
 ) -> Value {
     let resolved_detour = resolve_placeholder_detour(placeholder_detour, base);
 
@@ -618,12 +625,13 @@ pub fn convert(
                 existing,
                 &proxy_tags,
                 &config_tags,
-                proxies
+                proxies,
+                direct_tag,
             ));
             cfg
         }
         None => {
-            let outbounds = merge_outbounds(vec![], &proxy_tags, &config_tags, proxies);
+            let outbounds = merge_outbounds(vec![], &proxy_tags, &config_tags, proxies, direct_tag);
             json!({
                 "log":      {},
                 "dns":      {},
@@ -635,7 +643,7 @@ pub fn convert(
         }
     };
 
-    merge_rules(&mut cfg, clash_rules);
+    merge_rules(&mut cfg, clash_rules, direct_tag);
     cfg
 }
 
@@ -681,7 +689,7 @@ mod tests {
     #[test]
     fn convert_no_base_creates_all_fixed_outbounds() {
         let raw = "trojan=h.example.com:443, password=pw, tls-host=sni.example.com, over-tls=true, tls-verification=false, tag=JP T01\n";
-        let cfg = convert(raw, None, &[], &[], &[]);
+        let cfg = convert(raw, None, &[], &[], &[], "direct");
         let obs = cfg["outbounds"].as_array().unwrap();
         assert_eq!(obs[0]["type"], "selector");
         assert_eq!(obs[0]["outbounds"][0], "JP T01");
@@ -697,7 +705,7 @@ mod tests {
         let base = json!({
             "outbounds": [{"type": "direct", "tag": "direct"}],
         });
-        let cfg = convert(raw, Some(&base), &[], &[], &[]);
+        let cfg = convert(raw, Some(&base), &[], &[], &[], "direct");
         let obs = cfg["outbounds"].as_array().unwrap();
         assert_eq!(obs[0]["type"], "selector");
         assert_eq!(obs[0]["default"], "urltest");
@@ -715,7 +723,7 @@ mod tests {
                 {"type": "direct", "tag": "direct"},
             ],
         });
-        let cfg = convert(raw, Some(&base), &[], &[], &[]);
+        let cfg = convert(raw, Some(&base), &[], &[], &[], "direct");
         let outs = cfg["outbounds"][0]["outbounds"].as_array().unwrap();
         assert!(outs.contains(&json!("HK Node")));
         assert!(outs.contains(&json!("JP Node")));
@@ -737,7 +745,7 @@ mod tests {
                 {"type": "direct", "tag": "direct"},
             ],
         });
-        let cfg = convert(raw, Some(&base), &[], &[], &[]);
+        let cfg = convert(raw, Some(&base), &[], &[], &[], "direct");
         let obs = cfg["outbounds"].as_array().unwrap();
         let outs = find_by_tag(obs, "hk-only")["outbounds"].as_array().unwrap();
         assert!(outs.contains(&json!("HK Node")));
@@ -747,7 +755,7 @@ mod tests {
     #[test]
     fn parses_clash_ss() {
         let yaml = "proxies:\n  - name: abc\n    type: ss\n    server: example.com\n    port: 2333\n    cipher: chacha20-ietf-poly1305\n    password: example114514\n    udp: true\n";
-        let cfg = convert(yaml, None, &[], &[], &[]);
+        let cfg = convert(yaml, None, &[], &[], &[], "direct");
         let obs = cfg["outbounds"].as_array().unwrap();
         let ss = obs.iter().find(|v| v["type"] == "shadowsocks").unwrap();
         assert_eq!(ss["tag"], "abc");
@@ -760,7 +768,7 @@ mod tests {
     #[test]
     fn parses_clash_vmess() {
         let yaml = "proxies:\n  - name: vmtest\n    type: vmess\n    server: v.example.com\n    port: 443\n    uuid: bf000d23-0752-40b4-affe-68f7707a9661\n    alterId: 0\n    cipher: auto\n    tls: true\n    servername: sni.example.com\n    skip-cert-verify: false\n";
-        let cfg = convert(yaml, None, &[], &[], &[]);
+        let cfg = convert(yaml, None, &[], &[], &[], "direct");
         let obs = cfg["outbounds"].as_array().unwrap();
         let vm = obs.iter().find(|v| v["type"] == "vmess").unwrap();
         assert_eq!(vm["tag"], "vmtest");
@@ -772,7 +780,7 @@ mod tests {
     #[test]
     fn parses_clash_trojan() {
         let yaml = "proxies:\n  - name: tj\n    type: trojan\n    server: t.example.com\n    port: 443\n    password: secret\n    sni: sni.example.com\n    skip-cert-verify: false\n";
-        let cfg = convert(yaml, None, &[], &[], &[]);
+        let cfg = convert(yaml, None, &[], &[], &[], "direct");
         let obs = cfg["outbounds"].as_array().unwrap();
         let tj = obs.iter().find(|v| v["type"] == "trojan").unwrap();
         assert_eq!(tj["tag"], "tj");
@@ -792,7 +800,7 @@ mod tests {
                 {"type": "direct", "tag": "direct"},
             ],
         });
-        let cfg = convert(raw, Some(&base), &[], &[], &[]);
+        let cfg = convert(raw, Some(&base), &[], &[], &[], "direct");
         let obs = cfg["outbounds"].as_array().unwrap();
         let outs = find_by_tag(obs, "no-free")["outbounds"].as_array().unwrap();
         assert!(outs.contains(&json!("HK Node")));
@@ -816,6 +824,7 @@ mod tests {
             std::slice::from_ref(&extra),
             &[],
             &candidates,
+            "direct",
         );
         let obs = cfg["outbounds"].as_array().unwrap();
         let chained = obs.iter().find(|v| v["tag"] == "chained").unwrap();
@@ -826,7 +835,7 @@ mod tests {
     fn dialer_proxy_literal_becomes_detour() {
         let extra_yaml = "name: chained\ntype: ss\nserver: 1.2.3.4\nport: 1234\ncipher: chacha20-ietf-poly1305\npassword: pw\ndialer-proxy: some-group\n";
         let extra: serde_yaml::Value = serde_yaml::from_str(extra_yaml).unwrap();
-        let cfg = convert("", None, std::slice::from_ref(&extra), &[], &[]);
+        let cfg = convert("", None, std::slice::from_ref(&extra), &[], &[], "direct");
         let obs = cfg["outbounds"].as_array().unwrap();
         let chained = obs.iter().find(|v| v["tag"] == "chained").unwrap();
         assert_eq!(chained["detour"], "some-group");
@@ -840,7 +849,7 @@ mod tests {
             "IP-CIDR,10.0.0.0/8,DIRECT".to_string(),
             "DOMAIN,cdn.example.com,Proxy".to_string(),
         ];
-        let combined = combine_clash_rules(&rules);
+        let combined = combine_clash_rules(&rules, "direct");
         // Two outbounds: "Proxy" and "direct"
         assert_eq!(combined.len(), 2);
         let proxy_rule = combined.iter().find(|r| r["outbound"] == "Proxy").unwrap();
@@ -872,7 +881,7 @@ mod tests {
                 {"type": "direct", "tag": "🎯 全球直连"},
             ],
         });
-        let cfg = convert(raw, Some(&base), &[], &[], &[]);
+        let cfg = convert(raw, Some(&base), &[], &[], &[], "direct");
         let obs = cfg["outbounds"].as_array().unwrap();
 
         // "hk-only" must be absent.
@@ -897,7 +906,14 @@ mod tests {
                 {"type": "direct", "tag": "direct"},
             ],
         });
-        let cfg = convert(raw, Some(&base), std::slice::from_ref(&extra), &[], &[]);
+        let cfg = convert(
+            raw,
+            Some(&base),
+            std::slice::from_ref(&extra),
+            &[],
+            &[],
+            "direct",
+        );
         let obs = cfg["outbounds"].as_array().unwrap();
 
         let upstream_outs = find_by_tag(obs, "upstream-only")["outbounds"]

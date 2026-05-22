@@ -112,6 +112,7 @@ pub mod v2 {
                 share_config.proxies().get_vec(),
                 &share_config.rules().get_element(),
                 share_config.manual_insert_proxies(),
+                share_config.singbox_direct_tag(),
             );
             if let Some(level) = log_level {
                 let level = match level.to_ascii_lowercase().as_str() {

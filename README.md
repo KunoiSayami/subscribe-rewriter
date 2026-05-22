@@ -138,6 +138,11 @@ singbox:
   # If unset, sing-box is looked up on PATH. Returns 500 if the binary cannot be found or fails.
   bin_path: "/usr/local/bin/sing-box"
 
+  # Tag name of the direct outbound in the sing-box base config (optional).
+  # Clash rules targeting DIRECT are rewritten to this tag name.
+  # Defaults to "direct" if unset.
+  direct_tag: "DIRECT"
+
   # Rule-sets to compile and serve at GET /rule-set/<tag>
   rule_sets:
     - tag: cn-domain
@@ -161,7 +166,7 @@ When `singbox.config_path` is set, the file must be a valid sing-box JSON config
 
 Outbounds that use `{all}`, `{config_proxy}`, or `{upstream_proxy}` placeholders are expanded at request time using the converted proxy list. If a placeholder expands to an empty list (e.g. because a keyword filter matches nothing in the current subscription), that outbound is removed from the result and any references to its tag in other outbounds are pruned — preventing sing-box from rejecting the config due to empty outbound lists.
 
-On load, the server cross-validates all rules in `config.yaml` against the outbound tags declared in the sing-box base config. Any rule whose target outbound does not exist as a tag in the base config emits a warning in the log. This check runs on both initial load and every hot reload of either file.
+On load, the server cross-validates all rules in `config.yaml` against the outbound tags declared in the sing-box base config. Clash `DIRECT` rules are first rewritten to `singbox.direct_tag` (defaulting to `"direct"`) before the lookup, so the check correctly accounts for custom direct tag names. Any rule whose target outbound does not exist as a tag in the base config emits a warning in the log. This check runs on both initial load and every hot reload of either file.
 
 Example skeleton (`singbox-base.json`):
 

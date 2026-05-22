@@ -19,7 +19,7 @@ fn main() -> anyhow::Result<()> {
             .unwrap_or_else(|e| panic!("invalid JSON in {}: {e}", p.display()))
     });
 
-    let (extra, clash_rules, placeholder_detour) = if let Some(p) = local_config {
+    let (extra, clash_rules, placeholder_detour, direct_tag) = if let Some(p) = local_config {
         let s = std::fs::read_to_string(&p)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", p.display()));
         let cfg: serde_yaml::Value = serde_yaml::from_str(&s)
@@ -45,9 +45,14 @@ fn main() -> anyhow::Result<()> {
             })
             .unwrap_or_default();
 
-        (proxies, rules, groups)
+        let direct_tag = cfg["singbox"]["direct_tag"]
+            .as_str()
+            .unwrap_or("direct")
+            .to_string();
+
+        (proxies, rules, groups, direct_tag)
     } else {
-        (vec![], vec![], vec![])
+        (vec![], vec![], vec![], "direct".to_string())
     };
 
     let result = subscribe_rewriter::singbox::convert(
@@ -56,6 +61,7 @@ fn main() -> anyhow::Result<()> {
         &extra,
         &clash_rules,
         &placeholder_detour,
+        &direct_tag,
     );
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())

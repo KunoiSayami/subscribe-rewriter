@@ -449,6 +449,11 @@ mod ruleset_config {
         /// Override the sing-box executable path. Falls back to PATH lookup if unset.
         #[serde(default, alias = "bin-path")]
         pub bin_path: Option<String>,
+        /// Tag name of the direct outbound in the sing-box base config.
+        /// Clash rules targeting DIRECT are rewritten to this tag.
+        /// Defaults to "direct" if unset.
+        #[serde(default, alias = "direct-tag")]
+        pub direct_tag: Option<String>,
     }
 }
 
@@ -576,6 +581,10 @@ mod configure {
             self.singbox.bin_path.as_deref()
         }
 
+        pub fn singbox_direct_tag(&self) -> Option<&str> {
+            self.singbox.direct_tag.as_deref()
+        }
+
         pub(crate) async fn load<P: AsRef<Path>>(
             p: P,
         ) -> anyhow::Result<(Self, Option<serde_json::Value>)> {
@@ -633,9 +642,11 @@ mod configure {
                     .as_array()
                     .map(|arr| arr.iter().filter_map(|v| v["tag"].as_str()).collect())
                     .unwrap_or_default();
+                let direct_tag = ret.singbox_direct_tag().unwrap_or("direct");
                 for rule in ret.rules.get_element() {
-                    if let Some(r) = crate::singbox::parse_clash_rule(&rule) {
-                        if r.outbound != "direct" && !known_tags.contains(r.outbound.as_str()) {
+                    if let Some(r) = crate::singbox::parse_clash_rule_with_direct(&rule, direct_tag)
+                    {
+                        if !known_tags.contains(r.outbound.as_str()) {
                             log::warn!(
                                 "Rule target '{}' has no matching outbound in singbox base config",
                                 r.outbound
@@ -868,6 +879,7 @@ mod share_config {
         singbox_base: Option<serde_json::Value>,
         singbox_config_path: Option<String>,
         singbox_bin_path: Option<String>,
+        singbox_direct_tag: Option<String>,
         singbox_rule_sets: Vec<SingboxRuleSetEntry>,
     }
 
@@ -898,11 +910,13 @@ mod share_config {
                 test_url: local_configure.test_url(),
                 singbox_rule_sets: local_configure.singbox_rule_sets().clone(),
                 singbox_bin_path: local_configure.singbox_bin_path().map(str::to_owned),
+                singbox_direct_tag: local_configure.singbox_direct_tag().map(str::to_owned),
                 singbox_config_path: local_configure.singbox_config().map(str::to_owned),
                 manual_insert_proxies: local_configure.need_added_proxy(),
                 singbox_base,
             };
             log::debug!("{}", ret.briefing());
+            log::debug!("{}", ret.singbox_briefing());
             ret
         }
         pub fn rules(&self) -> &Rules {
@@ -951,10 +965,12 @@ mod share_config {
             self.test_url = local_configure.test_url();
             self.singbox_rule_sets = local_configure.singbox_rule_sets().clone();
             self.singbox_bin_path = local_configure.singbox_bin_path().map(str::to_owned);
+            self.singbox_direct_tag = local_configure.singbox_direct_tag().map(str::to_owned);
             self.singbox_config_path = local_configure.singbox_config().map(str::to_owned);
             self.manual_insert_proxies = local_configure.need_added_proxy();
             self.singbox_base = singbox_base;
-            log::debug!("{}", self.briefing());
+            info!("Reloaded local configure file: {}", self.briefing());
+            info!("{}", self.singbox_briefing());
         }
 
         pub fn singbox_base(&self) -> Option<&serde_json::Value> {
@@ -971,9 +987,12 @@ mod share_config {
                     .as_array()
                     .map(|arr| arr.iter().filter_map(|v| v["tag"].as_str()).collect())
                     .unwrap_or_default();
+                let direct_tag = self.singbox_direct_tag().to_owned();
                 for rule in self.rules.get_element() {
-                    if let Some(r) = crate::singbox::parse_clash_rule(&rule) {
-                        if r.outbound != "direct" && !known_tags.contains(r.outbound.as_str()) {
+                    if let Some(r) =
+                        crate::singbox::parse_clash_rule_with_direct(&rule, &direct_tag)
+                    {
+                        if !known_tags.contains(r.outbound.as_str()) {
                             log::warn!(
                                 "Rule target '{}' has no matching outbound in singbox base config",
                                 r.outbound
@@ -983,11 +1002,15 @@ mod share_config {
                 }
             }
             self.singbox_base = singbox_base;
-            info!("Reloaded singbox base config.");
+            info!("{}", self.singbox_briefing());
         }
 
         pub fn singbox_bin_path(&self) -> Option<&str> {
             self.singbox_bin_path.as_deref()
+        }
+
+        pub fn singbox_direct_tag(&self) -> &str {
+            self.singbox_direct_tag.as_deref().unwrap_or("direct")
         }
 
         pub fn briefing(&self) -> String {
@@ -999,6 +1022,28 @@ mod share_config {
                 self.proxies.len(),
                 self.groups.len(),
             )
+        }
+
+        pub fn singbox_briefing(&self) -> String {
+            match self.singbox_base.as_ref() {
+                None => "Reloaded singbox base config: (none)".to_string(),
+                Some(base) => {
+                    let outbounds = base["outbounds"].as_array().map(|a| a.len()).unwrap_or(0);
+                    let inbounds = base["inbounds"].as_array().map(|a| a.len()).unwrap_or(0);
+                    let route_rules = base["route"]["rules"]
+                        .as_array()
+                        .map(|a| a.len())
+                        .unwrap_or(0);
+                    let dns_rules = base["dns"]["rules"]
+                        .as_array()
+                        .map(|a| a.len())
+                        .unwrap_or(0);
+                    format!(
+                        "Reloaded singbox base config: {} outbounds, {} inbounds, {} route rules, {} dns rules",
+                        outbounds, inbounds, route_rules, dns_rules,
+                    )
+                }
+            }
         }
 
         pub async fn configure_file_updater(
@@ -1049,7 +1094,6 @@ mod share_config {
                                 });
                             }
                             cfg.update(new_cfg, singbox_base);
-                            info!("Reloaded local configure file.");
                         };
                     }
                     UpdateConfigureEvent::SingboxJsonUpdated => {
