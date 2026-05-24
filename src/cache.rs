@@ -51,18 +51,30 @@ mod cache_ {
     use anyhow::Context;
     use log::{debug, error, trace, warn};
     use redis::AsyncCommands;
+    use std::sync::OnceLock;
     use std::time::Duration;
 
     pub const CACHE_TIME: usize = 600;
     pub const RULESET_CACHE_TIME: usize = 86400;
 
-    async fn fetch_remote_file(url: &str) -> anyhow::Result<(String, String)> {
-        let client = reqwest::ClientBuilder::new()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .unwrap();
+    static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
-        let ret = client.get(url).send().await.context("fetch remote file")?;
+    fn http_client() -> &'static reqwest::Client {
+        HTTP_CLIENT.get_or_init(|| {
+            reqwest::ClientBuilder::new()
+                .timeout(Duration::from_secs(10))
+                .user_agent("curl/8.19.0")
+                .build()
+                .unwrap()
+        })
+    }
+
+    async fn fetch_remote_file(url: &str) -> anyhow::Result<(String, String)> {
+        let ret = http_client()
+            .get(url)
+            .send()
+            .await
+            .context("fetch remote file")?;
 
         let header = ret
             .headers()
