@@ -224,7 +224,7 @@ pub mod v2 {
             Err(_) => return bytes_error(500, "500 internal server error"),
         };
 
-        let mut source: serde_json::Value = match serde_json::from_str(&content) {
+        let mut source: serde_json::Value = match json5::from_str(&content) {
             Ok(v) => v,
             Err(e) => {
                 error!("Parse rule-set source JSON: {e:?}");

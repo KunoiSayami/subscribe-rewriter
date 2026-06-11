@@ -625,7 +625,7 @@ mod configure {
 
             let singbox_base = if let Some(path) = ret.singbox_config() {
                 match tokio::fs::read_to_string(path).await {
-                    Ok(s) => serde_json::from_str::<serde_json::Value>(&s)
+                    Ok(s) => json5::from_str::<serde_json::Value>(&s)
                         .inspect_err(|e| log::warn!("Parse singbox config {path}: {e:?}"))
                         .ok(),
                     Err(e) => {
@@ -730,7 +730,7 @@ mod external_config {
 
     impl ExternalConfig {
         pub(crate) async fn load<P: AsRef<Path>>(p: P) -> anyhow::Result<Self> {
-            serde_json::from_str(
+            json5::from_str(
                 tokio::fs::read_to_string(p.as_ref())
                     .await
                     .context("read external config")?
@@ -1103,7 +1103,7 @@ mod share_config {
                         };
                         if let Some(path) = path {
                             let singbox_base = match tokio::fs::read_to_string(&path).await {
-                                Ok(s) => serde_json::from_str::<serde_json::Value>(&s)
+                                Ok(s) => json5::from_str::<serde_json::Value>(&s)
                                     .inspect_err(|e| {
                                         log::warn!("Parse singbox config {path}: {e:?}")
                                     })

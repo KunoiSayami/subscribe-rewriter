@@ -260,14 +260,29 @@ fn build_anytls(
         .map(|v| v.eq_ignore_ascii_case("false"))
         .unwrap_or(false);
 
-    json!({
+    let mut out = json!({
         "type": "anytls",
         "tag": tag,
         "server": host,
         "server_port": port,
         "password": password,
         "tls": tls_object(sni, insecure, None),
-    })
+    });
+
+    if let Some(v) = kv.get("idle-session-check-interval") {
+        out["idle_session_check_interval"] = json!(v);
+    }
+    if let Some(v) = kv.get("idle-session-timeout") {
+        out["idle_session_timeout"] = json!(v);
+    }
+    if let Some(v) = kv
+        .get("min-idle-session")
+        .and_then(|s| s.parse::<u32>().ok())
+    {
+        out["min_idle_session"] = json!(v);
+    }
+
+    out
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -684,6 +699,20 @@ mod tests {
         assert_eq!(v["type"], "anytls");
         assert_eq!(v["tls"]["insecure"], true);
         assert_eq!(v["tls"]["server_name"], "cdn.example.com");
+        assert!(
+            v.get("idle_session_check_interval").is_none()
+                || v["idle_session_check_interval"].is_null()
+        );
+    }
+
+    #[test]
+    fn parses_anytls_session_options() {
+        let line = "anytls=example.com:38691, password=abc123, tls-host=cdn.example.com, tls-verification=false, idle-session-check-interval=60s, idle-session-timeout=120s, min-idle-session=3, tag=SG Node";
+        let v = parse_line(line).unwrap();
+        assert_eq!(v["type"], "anytls");
+        assert_eq!(v["idle_session_check_interval"], "60s");
+        assert_eq!(v["idle_session_timeout"], "120s");
+        assert_eq!(v["min_idle_session"], 3);
     }
 
     #[test]

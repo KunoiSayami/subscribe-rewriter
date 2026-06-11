@@ -15,7 +15,7 @@ fn main() -> anyhow::Result<()> {
     let base = base_config.as_deref().map(|p| {
         let s = std::fs::read_to_string(p)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", p.display()));
-        serde_json::from_str::<serde_json::Value>(&s)
+        json5::from_str::<serde_json::Value>(&s)
             .unwrap_or_else(|e| panic!("invalid JSON in {}: {e}", p.display()))
     });
 
