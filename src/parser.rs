@@ -460,12 +460,15 @@ mod ruleset_config {
 mod upstream {
     use super::Deserialize;
     use crate::parser::share_config::OverridableValue;
-    //use std::collections::HashMap;
 
     #[derive(Clone, Debug, Deserialize)]
     pub struct UpStream {
         sub_id: String,
-        upstream: String,
+        /// Name of another sub to inherit from. When set, any unset inheritable
+        /// field falls back to the parent's value. Resolved at load time.
+        #[serde(default)]
+        inherit: Option<String>,
+        upstream: Option<String>,
         raw: Option<String>,
         singbox: Option<String>,
         /// Per-subscription override for the sing-box base config path.
@@ -476,22 +479,31 @@ mod upstream {
         #[serde(default)]
         alias: Vec<String>,
         #[serde(default)]
-        passthrough: bool,
+        passthrough: Option<bool>,
     }
 
     impl UpStream {
         pub fn sub_id(&self) -> &str {
             &self.sub_id
         }
-        pub fn upstream(&self) -> &str {
-            &self.upstream
+
+        pub fn inherit(&self) -> Option<&str> {
+            self.inherit.as_deref()
         }
+
+        /// Panics if called before inheritance is resolved (upstream must be Some).
+        pub fn upstream(&self) -> &str {
+            self.upstream.as_deref().expect("upstream resolved")
+        }
+
         pub fn raw(&self) -> Option<&String> {
             self.raw.as_ref()
         }
+
         pub fn singbox(&self) -> Option<&String> {
             self.singbox.as_ref()
         }
+
         pub fn singbox_config_path(&self) -> Option<&str> {
             self.singbox_config_path.as_deref()
         }
@@ -505,7 +517,35 @@ mod upstream {
         }
 
         pub fn passthrough(&self) -> bool {
-            self.passthrough
+            self.passthrough.unwrap_or(false)
+        }
+
+        pub fn has_upstream(&self) -> bool {
+            self.upstream.is_some()
+        }
+
+        /// Apply fields from `parent` for any field this entry left unset.
+        /// `alias`, `sub_id`, and `inherit` are never inherited.
+        pub(crate) fn apply_parent(&mut self, parent: &UpStream) {
+            if self.upstream.is_none() {
+                self.upstream.clone_from(&parent.upstream);
+            }
+            if self.raw.is_none() {
+                self.raw.clone_from(&parent.raw);
+            }
+            if self.singbox.is_none() {
+                self.singbox.clone_from(&parent.singbox);
+            }
+            if self.singbox_config_path.is_none() {
+                self.singbox_config_path
+                    .clone_from(&parent.singbox_config_path);
+            }
+            if self.sub_override.is_none() {
+                self.sub_override = parent.sub_override;
+            }
+            if self.passthrough.is_none() {
+                self.passthrough = parent.passthrough;
+            }
         }
     }
 }
@@ -608,6 +648,7 @@ mod configure {
             .context("Parse configure as yaml")?;
 
             let mut ret = Self::from_yaml(raw)?;
+            ret.resolve_inheritance()?;
 
             let mut rules_count = 0;
 
@@ -693,6 +734,51 @@ mod configure {
                 }
             }
             map
+        }
+
+        /// Resolve `inherit` chains in `self.upstream` in-place.
+        ///
+        /// Each entry with `inherit: <parent_id>` copies unset fields from the
+        /// named parent. Only one level of indirection is supported — the parent
+        /// must not itself use `inherit`. Detects both missing parents and
+        /// multi-hop chains and returns an error for either.
+        fn resolve_inheritance(&mut self) -> anyhow::Result<()> {
+            use std::collections::HashMap;
+            // Build a snapshot of parents first so the borrow checker is happy.
+            let parents: HashMap<String, UpStream> = self
+                .upstream
+                .iter()
+                .filter(|u| u.inherit().is_none())
+                .map(|u| (u.sub_id().to_string(), u.clone()))
+                .collect();
+
+            for child in self.upstream.iter_mut() {
+                let Some(parent_id) = child.inherit().map(str::to_owned) else {
+                    if !child.has_upstream() {
+                        anyhow::bail!(
+                            "sub '{}' has no `upstream` and no `inherit`",
+                            child.sub_id()
+                        );
+                    }
+                    continue;
+                };
+                let parent = parents.get(&parent_id).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "sub '{}' inherits from '{}' which does not exist or itself uses inherit",
+                        child.sub_id(),
+                        parent_id,
+                    )
+                })?;
+                child.apply_parent(parent);
+                if !child.has_upstream() {
+                    anyhow::bail!(
+                        "sub '{}' inherits from '{}' but neither defines `upstream`",
+                        child.sub_id(),
+                        parent_id,
+                    );
+                }
+            }
+            Ok(())
         }
 
         /// Deserialize from a raw YAML value, hoisting legacy flat keys into `singbox`.

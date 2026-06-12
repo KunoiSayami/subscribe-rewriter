@@ -10,6 +10,7 @@ A proxy subscription rewriting service for Clash and sing-box. It fetches remote
 - **Custom proxy groups** — Define local proxy groups (select, relay, url-test) in the config. Supports `<PlaceHold>` placeholder resolution and per-subscription filtering via `apply_to` / `not_apply_to`.
 - **Dialer proxy chaining** — Local proxies can use `dialer-proxy: <PlaceHold>` to automatically chain through a matched upstream proxy group.
 - **Multi-subscription support** — Maps multiple `sub_id` paths to different upstream URLs, each with optional overrides (e.g. expiry, traffic limits).
+- **Subscription inheritance** — An upstream entry can set `inherit: <parent_sub_id>` to copy all fields from another entry. Any field explicitly set on the child overrides the inherited value. Useful for creating variants of a subscription that differ only in a few fields (e.g. different `override` values or an extra `alias`).
 - **Redis caching** — Caches fetched upstream configs in Redis (default TTL: 600s) to reduce redundant requests. Can be disabled with `--nocache`.
 - **External rules** — Import rules from external JSON config files via the `additional_rules` field, with support for domain, domain-suffix, and domain-regex rule types.
 - **Hot reload** — Watches both the config file and the sing-box base JSON file for changes and reloads automatically without restarting the server. If `singbox.config_path` changes between reloads, the watcher is restarted on the new path.
@@ -64,12 +65,22 @@ upstream:
     upstream: "https://example.com/clash-sub"
     raw: "https://example.com/raw-sub"        # optional, used with ?method=raw; may be a local file path
     singbox: "https://example.com/surge-sub"  # optional, used with ?method=singbox (Surge-format); may be a local file path
+    singbox_config_path: "/etc/sub/custom-singbox-base.json"  # optional, per-subscription sing-box base config
     passthrough: false                         # optional; if true, content is returned as-is without rewriting
     override:                                  # optional
       expire: 1711451400
       total: 114514191981
       download: 0
       upload: 0
+    alias:                                     # optional, alternative sub_ids that resolve to this entry
+      - <alias_id>
+
+  # Subscription with inheritance — copies all fields from the parent above,
+  # then overrides only what is explicitly set here.
+  - sub_id: <variant_id>
+    inherit: <unique_id>                       # must reference a sub_id that does not itself use inherit
+    override:
+      expire: 1900000000                       # overrides the inherited expire value
 
 # Extra rules prepended to the upstream config
 rules:
