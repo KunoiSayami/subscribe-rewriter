@@ -12,7 +12,7 @@ use crate::parser::{
 use crate::web::get;
 use axum::http::StatusCode;
 use axum::{Extension, Json, Router};
-use clap::{arg, command};
+use clap::{ArgMatches, arg, command};
 use log::{LevelFilter, debug, info, warn};
 use serde_json::json;
 use std::io::Write;
@@ -292,11 +292,16 @@ fn init_log(verbose: u8, systemd: bool) {
     binding.init();
 }
 
-fn main() -> anyhow::Result<()> {
-    let matches = command!()
+fn config_arg() -> clap::Arg {
+    arg!(-c --config [configure_file] "Specify configure location")
+        .default_value(DEFAULT_CONFIG_LOCATION)
+}
+
+fn serve_subcommand() -> clap::Command {
+    clap::Command::new("serve")
+        .about("Start the subscription rewriting server (default)")
         .args(&[
-            arg!(-c --config [configure_file] "Specify configure location")
-                .default_value(DEFAULT_CONFIG_LOCATION),
+            config_arg(),
             arg!(--interval [url_test_interval] "Specify url test interval [default: 600]")
                 .default_value(DEFAULT_URL_TEST_INTERVAL_STR.as_str())
                 .value_parser(clap::value_parser!(u64)),
@@ -306,8 +311,18 @@ fn main() -> anyhow::Result<()> {
                 .default_value(DEFAULT_SUB_PREFIX),
             arg!(-v --verbose ... "Show more logs"),
         ])
-        .get_matches();
+}
 
+fn suggest_subcommand() -> clap::Command {
+    clap::Command::new("suggest")
+        .about("Analyse the config and suggest whether to use `inherit` or keep subs separate")
+        .args(&[
+            config_arg(),
+            arg!(-o --output [output_file] "Write the modified config to this path (\"-\" for stdout)"),
+        ])
+}
+
+fn run_serve(matches: &ArgMatches) -> anyhow::Result<()> {
     init_log(matches.get_count("verbose"), matches.get_flag("systemd"));
 
     DISABLE_CACHE.set(matches.get_flag("nocache")).unwrap();
@@ -324,7 +339,6 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| DEFAULT_CONFIG_LOCATION.to_string());
 
     let (file_update_sender, file_update_receiver) = tokio::sync::mpsc::channel(1);
-
     let file_watching_thread = FileWatchDog::start(config_path.clone(), file_update_sender.clone());
 
     let main_ret = tokio::runtime::Builder::new_multi_thread()
@@ -339,4 +353,345 @@ fn main() -> anyhow::Result<()> {
 
     file_watching_thread.stop();
     main_ret
+}
+
+fn run_suggest(matches: &ArgMatches) -> anyhow::Result<()> {
+    let config_path = matches
+        .get_one("config")
+        .map(|s: &String| s.to_string())
+        .unwrap_or_else(|| DEFAULT_CONFIG_LOCATION.to_string());
+
+    let output_path = matches.get_one::<String>("output").cloned();
+
+    let (raw_yaml, upstreams) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let raw = Configure::load_raw_yaml(&config_path).await?;
+            let ups = Configure::parse_raw_upstreams(&raw)?;
+            anyhow::Ok((raw, ups))
+        })?;
+
+    let actions = suggest::analyse_and_print(&upstreams);
+
+    if let Some(path) = output_path {
+        let modified = suggest::apply_actions(raw_yaml, &actions)?;
+        let yaml_str = serde_yaml::to_string(&modified)?;
+        if path == "-" {
+            print!("{yaml_str}");
+        } else {
+            std::fs::write(&path, &yaml_str)?;
+            println!("Written to {path}");
+        }
+    }
+
+    Ok(())
+}
+
+fn main() -> anyhow::Result<()> {
+    let matches = command!()
+        .subcommand_required(false)
+        .subcommand(serve_subcommand())
+        .subcommand(suggest_subcommand())
+        // Legacy flat args so the binary keeps working without a subcommand.
+        .args(&[
+            config_arg(),
+            arg!(--interval [url_test_interval] "Specify url test interval [default: 600]")
+                .default_value(DEFAULT_URL_TEST_INTERVAL_STR.as_str())
+                .value_parser(clap::value_parser!(u64)),
+            arg!(--systemd "Disable datetime output in syslog"),
+            arg!(--nocache "Disable cache"),
+            arg!(--prefix [prefix] "Override server default prefix")
+                .default_value(DEFAULT_SUB_PREFIX),
+            arg!(-v --verbose ... "Show more logs"),
+        ])
+        .get_matches();
+
+    match matches.subcommand() {
+        Some(("serve", sub)) => run_serve(sub),
+        Some(("suggest", sub)) => run_suggest(sub),
+        _ => run_serve(&matches),
+    }
+}
+
+mod suggest {
+    use crate::parser::UpStream;
+
+    /// What transformation to apply to a pair of subs in the output config.
+    pub enum Action {
+        /// Keep the first sub, append the second's sub_id (and aliases) to the
+        /// first's alias list, and remove the second entry entirely.
+        MergeAsAlias {
+            keep: String,
+            remove: String,
+            extra_aliases: Vec<String>,
+        },
+        /// Rewrite the child to use `inherit:` from the parent and strip all
+        /// URL fields from the child that are identical to the parent's.
+        UseInherit { parent: String, child: String },
+    }
+
+    #[derive(PartialEq)]
+    struct UrlSet<'a> {
+        upstream: &'a str,
+        raw: Option<&'a str>,
+        singbox: Option<&'a str>,
+        singbox_config_path: Option<&'a str>,
+    }
+
+    impl<'a> UrlSet<'a> {
+        fn from(u: &'a UpStream) -> Self {
+            Self {
+                upstream: u.upstream(),
+                raw: u.raw().map(String::as_str),
+                singbox: u.singbox().map(String::as_str),
+                singbox_config_path: u.singbox_config_path(),
+            }
+        }
+
+        fn shares_upstream(&self, other: &UrlSet) -> bool {
+            self.upstream == other.upstream
+        }
+    }
+
+    fn non_url_identical(a: &UpStream, b: &UpStream) -> bool {
+        format!("{:?}", a.sub_override()) == format!("{:?}", b.sub_override())
+            && a.passthrough() == b.passthrough()
+    }
+
+    /// Analyse upstreams, print findings, and return the list of actions to
+    /// apply when `--output` is requested.
+    pub fn analyse_and_print(upstreams: &[UpStream]) -> Vec<Action> {
+        // Only look at base subs (those without inherit already set).
+        let bases: Vec<&UpStream> = upstreams.iter().filter(|u| u.inherit().is_none()).collect();
+
+        let mut actions = Vec::new();
+        let mut found_any = false;
+
+        for i in 0..bases.len() {
+            for j in (i + 1)..bases.len() {
+                let a = bases[i];
+                let b = bases[j];
+                let ua = UrlSet::from(a);
+                let ub = UrlSet::from(b);
+
+                if !ua.shares_upstream(&ub) {
+                    continue;
+                }
+
+                found_any = true;
+
+                let urls_identical = ua == ub;
+                let non_url_same = non_url_identical(a, b);
+
+                if urls_identical && non_url_same {
+                    println!(
+                        "[alias] '{}' and '{}' are completely identical.",
+                        a.sub_id(),
+                        b.sub_id()
+                    );
+                    println!(
+                        "  Suggestion: remove '{}' and add its sub_id as an alias on '{}'.",
+                        b.sub_id(),
+                        a.sub_id()
+                    );
+                    let mut extra = vec![b.sub_id().to_string()];
+                    extra.extend(b.alias().iter().cloned());
+                    actions.push(Action::MergeAsAlias {
+                        keep: a.sub_id().to_string(),
+                        remove: b.sub_id().to_string(),
+                        extra_aliases: extra,
+                    });
+                } else if urls_identical {
+                    println!(
+                        "[inherit] '{}' and '{}' share all URL fields but differ in non-URL fields.",
+                        a.sub_id(),
+                        b.sub_id()
+                    );
+                    println!(
+                        "  Suggestion: keep '{}' as the base and rewrite '{}' to use `inherit: {}`.",
+                        a.sub_id(),
+                        b.sub_id(),
+                        a.sub_id()
+                    );
+                    print_non_url_diffs(a, b);
+                    actions.push(Action::UseInherit {
+                        parent: a.sub_id().to_string(),
+                        child: b.sub_id().to_string(),
+                    });
+                } else {
+                    println!(
+                        "[inherit] '{}' and '{}' share `upstream` but differ in optional URL fields.",
+                        a.sub_id(),
+                        b.sub_id()
+                    );
+                    println!(
+                        "  Suggestion: keep '{}' as the base and rewrite '{}' to use `inherit: {}`,",
+                        a.sub_id(),
+                        b.sub_id(),
+                        a.sub_id()
+                    );
+                    println!("  then explicitly set the differing URL fields on the child.");
+                    print_url_diffs(&ua, &ub);
+                    print_non_url_diffs(a, b);
+                    actions.push(Action::UseInherit {
+                        parent: a.sub_id().to_string(),
+                        child: b.sub_id().to_string(),
+                    });
+                }
+                println!();
+            }
+        }
+
+        if !found_any {
+            println!(
+                "No overlapping upstream URLs found. All subs look independent — no changes needed."
+            );
+        }
+
+        actions
+    }
+
+    /// Apply the suggested actions to the raw YAML value and return the result.
+    ///
+    /// For `MergeAsAlias`: appends extra aliases to the `keep` entry's `alias`
+    /// list and removes the `remove` entry from the `upstream` sequence.
+    ///
+    /// For `UseInherit`: adds `inherit: <parent>` to the child entry and
+    /// removes URL fields on the child that are identical to the parent's.
+    pub fn apply_actions(
+        mut raw: serde_yaml::Value,
+        actions: &[Action],
+    ) -> anyhow::Result<serde_yaml::Value> {
+        let upstream_key = serde_yaml::Value::String("upstream".into());
+        let Some(serde_yaml::Value::Sequence(seq)) = raw.get_mut(&upstream_key) else {
+            anyhow::bail!("missing `upstream` sequence in config");
+        };
+
+        for action in actions {
+            match action {
+                Action::MergeAsAlias {
+                    keep,
+                    remove,
+                    extra_aliases,
+                } => {
+                    // Append extra aliases to the `keep` entry.
+                    if let Some(entry) = seq
+                        .iter_mut()
+                        .find(|e| e.get("sub_id").and_then(|v| v.as_str()) == Some(keep.as_str()))
+                    {
+                        let alias_key = serde_yaml::Value::String("alias".into());
+                        let alias_list = entry
+                            .as_mapping_mut()
+                            .and_then(|m| m.get_mut(&alias_key))
+                            .and_then(|v| v.as_sequence_mut());
+
+                        if let Some(list) = alias_list {
+                            for al in extra_aliases {
+                                list.push(serde_yaml::Value::String(al.clone()));
+                            }
+                        } else if let Some(map) = entry.as_mapping_mut() {
+                            map.insert(
+                                alias_key,
+                                serde_yaml::Value::Sequence(
+                                    extra_aliases
+                                        .iter()
+                                        .map(|s| serde_yaml::Value::String(s.clone()))
+                                        .collect(),
+                                ),
+                            );
+                        }
+                    }
+                    // Remove the `remove` entry.
+                    seq.retain(|e| {
+                        e.get("sub_id").and_then(|v| v.as_str()) != Some(remove.as_str())
+                    });
+                }
+
+                Action::UseInherit { parent, child } => {
+                    // Collect parent's URL field values for comparison.
+                    let parent_urls: std::collections::HashMap<String, serde_yaml::Value> = seq
+                        .iter()
+                        .find(|e| e.get("sub_id").and_then(|v| v.as_str()) == Some(parent.as_str()))
+                        .and_then(|e| e.as_mapping())
+                        .map(|m| {
+                            URL_FIELDS
+                                .iter()
+                                .filter_map(|&k| {
+                                    let key = serde_yaml::Value::String(k.into());
+                                    m.get(&key).map(|v| (k.to_string(), v.clone()))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    if let Some(entry) = seq
+                        .iter_mut()
+                        .find(|e| e.get("sub_id").and_then(|v| v.as_str()) == Some(child.as_str()))
+                    {
+                        if let Some(map) = entry.as_mapping_mut() {
+                            // Add inherit key.
+                            map.insert(
+                                serde_yaml::Value::String("inherit".into()),
+                                serde_yaml::Value::String(parent.clone()),
+                            );
+                            // Remove URL fields on the child that match the parent's.
+                            for field in URL_FIELDS {
+                                let key = serde_yaml::Value::String((*field).into());
+                                let child_val = map.get(&key).cloned();
+                                let parent_val = parent_urls.get(*field);
+                                if child_val.as_ref() == parent_val {
+                                    map.remove(&key);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(raw)
+    }
+
+    const URL_FIELDS: &[&str] = &["upstream", "raw", "singbox", "singbox_config_path"];
+
+    fn print_url_diffs(a: &UrlSet, b: &UrlSet) {
+        if a.raw != b.raw {
+            println!("  raw:                 {:?} vs {:?}", a.raw, b.raw);
+        }
+        if a.singbox != b.singbox {
+            println!("  singbox:             {:?} vs {:?}", a.singbox, b.singbox);
+        }
+        if a.singbox_config_path != b.singbox_config_path {
+            println!(
+                "  singbox_config_path: {:?} vs {:?}",
+                a.singbox_config_path, b.singbox_config_path
+            );
+        }
+    }
+
+    fn print_non_url_diffs(a: &UpStream, b: &UpStream) {
+        match (a.sub_override(), b.sub_override()) {
+            (None, Some(_)) => println!(
+                "  override: '{}' has none; '{}' has one",
+                a.sub_id(),
+                b.sub_id()
+            ),
+            (Some(_), None) => println!(
+                "  override: '{}' has one; '{}' has none",
+                a.sub_id(),
+                b.sub_id()
+            ),
+            (Some(oa), Some(ob)) => {
+                if format!("{oa:?}") != format!("{ob:?}") {
+                    println!("  override values differ: {oa:?} vs {ob:?}");
+                }
+            }
+            (None, None) => {}
+        }
+        if a.passthrough() != b.passthrough() {
+            println!("  passthrough: {} vs {}", a.passthrough(), b.passthrough());
+        }
+    }
 }

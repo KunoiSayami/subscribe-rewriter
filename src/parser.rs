@@ -631,6 +631,28 @@ mod configure {
             self.singbox.direct_tag.as_deref()
         }
 
+        /// Load and return the raw YAML value without resolving inheritance or
+        /// loading external files. Used by the `suggest --output` path.
+        pub async fn load_raw_yaml<P: AsRef<Path>>(p: P) -> anyhow::Result<serde_yaml::Value> {
+            let text = tokio::fs::read_to_string(p.as_ref())
+                .await
+                .context("read local config")?;
+            serde_yaml::from_str(&text).context("parse config as yaml")
+        }
+
+        /// Parse the `upstream` list from a raw YAML value without resolving
+        /// inheritance. Allows the suggest output path to analyse the config as
+        /// the user wrote it.
+        pub fn parse_raw_upstreams(raw: &serde_yaml::Value) -> anyhow::Result<Vec<UpStream>> {
+            let seq = raw
+                .get("upstream")
+                .and_then(|v| v.as_sequence())
+                .ok_or_else(|| anyhow::anyhow!("missing `upstream` sequence in config"))?;
+            seq.iter()
+                .map(|v| serde_yaml::from_value(v.clone()).context("parse upstream entry"))
+                .collect()
+        }
+
         pub(crate) async fn load<P: AsRef<Path>>(
             p: P,
         ) -> anyhow::Result<(
@@ -738,45 +760,74 @@ mod configure {
 
         /// Resolve `inherit` chains in `self.upstream` in-place.
         ///
-        /// Each entry with `inherit: <parent_id>` copies unset fields from the
-        /// named parent. Only one level of indirection is supported — the parent
-        /// must not itself use `inherit`. Detects both missing parents and
-        /// multi-hop chains and returns an error for either.
+        /// Supports chains of arbitrary depth. Resolution order is determined
+        /// topologically: a parent is fully resolved before any of its children
+        /// are processed. Cycles are detected and returned as an error.
         fn resolve_inheritance(&mut self) -> anyhow::Result<()> {
             use std::collections::HashMap;
-            // Build a snapshot of parents first so the borrow checker is happy.
-            let parents: HashMap<String, UpStream> = self
+
+            // Index by sub_id for O(1) lookup during resolution.
+            let mut resolved: HashMap<String, UpStream> = HashMap::new();
+            // Track which sub_ids are currently on the resolution stack to detect cycles.
+            let mut in_progress: Vec<String> = Vec::new();
+
+            // Clone the full list so we can resolve each entry independently.
+            let originals: HashMap<String, UpStream> = self
                 .upstream
                 .iter()
-                .filter(|u| u.inherit().is_none())
                 .map(|u| (u.sub_id().to_string(), u.clone()))
                 .collect();
 
-            for child in self.upstream.iter_mut() {
-                let Some(parent_id) = child.inherit().map(str::to_owned) else {
-                    if !child.has_upstream() {
+            // Recursive resolution via an explicit stack to avoid Rust borrow issues.
+            fn resolve_one(
+                id: &str,
+                originals: &HashMap<String, UpStream>,
+                resolved: &mut HashMap<String, UpStream>,
+                in_progress: &mut Vec<String>,
+            ) -> anyhow::Result<()> {
+                if resolved.contains_key(id) {
+                    return Ok(());
+                }
+                if in_progress.iter().any(|s| s == id) {
+                    in_progress.push(id.to_string());
+                    anyhow::bail!("inherit cycle detected: {}", in_progress.join(" -> "));
+                }
+                let entry = originals.get(id).ok_or_else(|| {
+                    anyhow::anyhow!("sub '{}' referenced as parent but not found", id)
+                })?;
+                let Some(parent_id) = entry.inherit().map(str::to_owned) else {
+                    if !entry.has_upstream() {
                         anyhow::bail!(
                             "sub '{}' has no `upstream` and no `inherit`",
-                            child.sub_id()
+                            entry.sub_id()
                         );
                     }
-                    continue;
+                    resolved.insert(id.to_string(), entry.clone());
+                    return Ok(());
                 };
-                let parent = parents.get(&parent_id).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "sub '{}' inherits from '{}' which does not exist or itself uses inherit",
-                        child.sub_id(),
-                        parent_id,
-                    )
-                })?;
-                child.apply_parent(parent);
-                if !child.has_upstream() {
+                in_progress.push(id.to_string());
+                resolve_one(&parent_id, originals, resolved, in_progress)?;
+                in_progress.pop();
+                let mut entry = entry.clone();
+                let parent = resolved.get(&parent_id).unwrap();
+                entry.apply_parent(parent);
+                if !entry.has_upstream() {
                     anyhow::bail!(
                         "sub '{}' inherits from '{}' but neither defines `upstream`",
-                        child.sub_id(),
+                        id,
                         parent_id,
                     );
                 }
+                resolved.insert(id.to_string(), entry);
+                Ok(())
+            }
+
+            for id in originals.keys() {
+                resolve_one(id, &originals, &mut resolved, &mut in_progress)?;
+            }
+
+            for entry in self.upstream.iter_mut() {
+                *entry = resolved.remove(entry.sub_id()).unwrap();
             }
             Ok(())
         }
