@@ -468,6 +468,9 @@ mod upstream {
         upstream: String,
         raw: Option<String>,
         singbox: Option<String>,
+        /// Per-subscription override for the sing-box base config path.
+        #[serde(default, alias = "singbox_config", alias = "singbox-config-path")]
+        singbox_config_path: Option<String>,
         #[serde(rename = "override")]
         sub_override: Option<OverridableValue>,
         #[serde(default)]
@@ -488,6 +491,9 @@ mod upstream {
         }
         pub fn singbox(&self) -> Option<&String> {
             self.singbox.as_ref()
+        }
+        pub fn singbox_config_path(&self) -> Option<&str> {
+            self.singbox_config_path.as_deref()
         }
 
         pub fn sub_override(&self) -> Option<OverridableValue> {
@@ -587,7 +593,11 @@ mod configure {
 
         pub(crate) async fn load<P: AsRef<Path>>(
             p: P,
-        ) -> anyhow::Result<(Self, Option<serde_json::Value>)> {
+        ) -> anyhow::Result<(
+            Self,
+            Option<serde_json::Value>,
+            std::collections::HashMap<String, serde_json::Value>,
+        )> {
             // Support legacy flat keys by pre-processing the YAML value.
             let raw: serde_yaml::Value = serde_yaml::from_str(
                 tokio::fs::read_to_string(p.as_ref())
@@ -656,7 +666,33 @@ mod configure {
                 }
             }
 
-            Ok((ret, singbox_base))
+            let per_sub_singbox_bases = Self::load_per_sub_singbox_bases(ret.upstream()).await;
+
+            Ok((ret, singbox_base, per_sub_singbox_bases))
+        }
+
+        pub async fn load_per_sub_singbox_bases(
+            upstreams: &[UpStream],
+        ) -> std::collections::HashMap<String, serde_json::Value> {
+            let mut map = std::collections::HashMap::new();
+            for up in upstreams {
+                let Some(path) = up.singbox_config_path() else {
+                    continue;
+                };
+                let base = match tokio::fs::read_to_string(path).await {
+                    Ok(s) => json5::from_str::<serde_json::Value>(&s)
+                        .inspect_err(|e| log::warn!("Parse per-sub singbox config {path}: {e:?}"))
+                        .ok(),
+                    Err(e) => {
+                        log::warn!("Read per-sub singbox config {path}: {e:?}");
+                        None
+                    }
+                };
+                if let Some(base) = base {
+                    map.insert(up.sub_id().to_string(), base);
+                }
+            }
+            map
         }
 
         /// Deserialize from a raw YAML value, hoisting legacy flat keys into `singbox`.
@@ -877,6 +913,7 @@ mod share_config {
         test_url: String,
         manual_insert_proxies: Vec<String>,
         singbox_base: Option<serde_json::Value>,
+        singbox_bases: std::collections::HashMap<String, serde_json::Value>,
         singbox_config_path: Option<String>,
         singbox_bin_path: Option<String>,
         singbox_direct_tag: Option<String>,
@@ -897,6 +934,7 @@ mod share_config {
         pub fn new(
             local_configure: Configure,
             singbox_base: Option<serde_json::Value>,
+            singbox_bases: std::collections::HashMap<String, serde_json::Value>,
             redis_client: redis::Client,
         ) -> Self {
             let ret = Self {
@@ -914,6 +952,7 @@ mod share_config {
                 singbox_config_path: local_configure.singbox_config().map(str::to_owned),
                 manual_insert_proxies: local_configure.need_added_proxy(),
                 singbox_base,
+                singbox_bases,
             };
             log::debug!("{}", ret.briefing());
             log::debug!("{}", ret.singbox_briefing());
@@ -955,6 +994,7 @@ mod share_config {
             &mut self,
             local_configure: Configure,
             singbox_base: Option<serde_json::Value>,
+            singbox_bases: std::collections::HashMap<String, serde_json::Value>,
         ) {
             self.alias_map = Self::alias_into_hashmap(local_configure.upstream());
             self.upstream = Self::upstreams_into_hashmap(local_configure.upstream());
@@ -969,12 +1009,20 @@ mod share_config {
             self.singbox_config_path = local_configure.singbox_config().map(str::to_owned);
             self.manual_insert_proxies = local_configure.need_added_proxy();
             self.singbox_base = singbox_base;
+            self.singbox_bases = singbox_bases;
             info!("Reloaded local configure file: {}", self.briefing());
             info!("{}", self.singbox_briefing());
         }
 
+        #[allow(dead_code)]
         pub fn singbox_base(&self) -> Option<&serde_json::Value> {
             self.singbox_base.as_ref()
+        }
+
+        pub fn singbox_base_for(&self, sub_id: &str) -> Option<&serde_json::Value> {
+            self.singbox_bases
+                .get(sub_id)
+                .or_else(|| self.singbox_base.as_ref())
         }
 
         pub fn singbox_config_path(&self) -> Option<&str> {
@@ -1073,7 +1121,7 @@ mod share_config {
                 match event {
                     UpdateConfigureEvent::NeedUpdate => {
                         let mut cfg = configure_file.write().await;
-                        if let Ok((new_cfg, singbox_base)) =
+                        if let Ok((new_cfg, singbox_base, singbox_bases)) =
                             Configure::load(&configure_path).await.inspect_err(|e| {
                                 error!("[Can be safely ignored] Load configure: {e:?}")
                             })
@@ -1093,7 +1141,7 @@ mod share_config {
                                     )
                                 });
                             }
-                            cfg.update(new_cfg, singbox_base);
+                            cfg.update(new_cfg, singbox_base, singbox_bases);
                         };
                     }
                     UpdateConfigureEvent::SingboxJsonUpdated => {

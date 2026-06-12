@@ -108,7 +108,7 @@ pub mod v2 {
         } else if method.eq("singbox") {
             let mut cfg = crate::singbox::convert(
                 &content,
-                share_config.singbox_base(),
+                share_config.singbox_base_for(&sub_id),
                 share_config.proxies().get_vec(),
                 &share_config.rules().get_element(),
                 share_config.manual_insert_proxies(),
