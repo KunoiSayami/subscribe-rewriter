@@ -295,7 +295,9 @@ mod remote_configure {
                     element.remove(ret.unwrap());
                 }
             }
-            info!("Remove {} empty password elements.", v.len());
+            if !v.is_empty() {
+                info!("Remove {} empty password elements.", v.len());
+            }
             self
         }
 

@@ -390,16 +390,6 @@ fn expand_all(entry: &mut Value, proxy_tags: &[String], config_tags: &[String]) 
 /// - `selector`: if absent, a new one with `default: "urltest"` is prepended.
 /// - `urltest`: if absent, a new one with all proxy tags is prepended.
 /// - Converted proxy outbounds are appended at the end.
-/// Returns true if this outbound was produced by expanding a placeholder
-/// (`{all}`, `{config_proxy}`, or `{upstream_proxy}`). Only expanded outbounds
-/// can legitimately end up empty, so we only prune those.
-fn was_expanded(entry: &Value) -> bool {
-    // After expand_all the "filter" key is removed from expanded entries.
-    // We mark them during expansion instead by checking whether the type is
-    // selector/urltest (the only types that carry an outbounds list in configs).
-    matches!(type_of(entry), Some("selector") | Some("urltest")) && entry.get("filter").is_none()
-}
-
 fn merge_outbounds(
     mut existing: Vec<Value>,
     proxy_tags: &[String],
@@ -415,27 +405,31 @@ fn merge_outbounds(
         expand_all(entry, proxy_tags, config_tags);
     }
 
-    // Collect tags of expanded outbounds whose outbounds list is now empty.
-    let empty_tags: std::collections::HashSet<String> = existing
-        .iter()
-        .filter(|e| {
-            was_expanded(e)
-                && e["outbounds"]
+    // Iteratively remove any outbound whose `outbounds` list is empty, pruning
+    // cross-references from other entries each round, until no more are found.
+    // This handles cascading emptiness: removing A may leave B with only A in
+    // its list, making B empty too.
+    loop {
+        let empty_tags: std::collections::HashSet<String> = existing
+            .iter()
+            .filter(|e| {
+                e["outbounds"]
                     .as_array()
                     .map(|a| a.is_empty())
                     .unwrap_or(false)
-        })
-        .filter_map(|e| tag_of(e).map(|t| t.to_string()))
-        .collect();
+            })
+            .filter_map(|e| tag_of(e).map(|t| t.to_string()))
+            .collect();
 
-    if !empty_tags.is_empty() {
-        // Remove cross-references to empty outbounds from all other entries.
+        if empty_tags.is_empty() {
+            break;
+        }
+
         for entry in existing.iter_mut() {
             if let Some(arr) = entry["outbounds"].as_array_mut() {
                 arr.retain(|v| v.as_str().map(|t| !empty_tags.contains(t)).unwrap_or(true));
             }
         }
-        // Remove the empty outbounds themselves.
         existing.retain(|e| tag_of(e).map(|t| !empty_tags.contains(t)).unwrap_or(true));
     }
 
@@ -921,6 +915,49 @@ mod tests {
         let main_outs = main["outbounds"].as_array().unwrap();
         assert!(!main_outs.contains(&json!("hk-only")));
         assert!(main_outs.contains(&json!("🎯 全球直连")));
+    }
+
+    #[test]
+    fn empty_static_outbound_cascades() {
+        // "hk-only" is static (no placeholder) but ends up empty after "group-a"
+        // is removed, making "group-b" (which only referenced "group-a") empty too.
+        let raw = "trojan=h.example.com:443, password=pw, tls-host=s.example.com, over-tls=true, tls-verification=false, tag=JP Node\n";
+        let base = json!({
+            "outbounds": [
+                {
+                    "type": "selector", "tag": "hk-only", "outbounds": ["{all}"],
+                    "filter": [{"action": "include", "keywords": ["HK|香港"]}]
+                },
+                {
+                    "type": "selector", "tag": "group-a",
+                    "outbounds": ["hk-only"]
+                },
+                {
+                    "type": "selector", "tag": "group-b",
+                    "outbounds": ["group-a"]
+                },
+                {"type": "direct", "tag": "direct"},
+            ],
+        });
+        let cfg = convert(raw, Some(&base), &[], &[], &[], "direct");
+        let obs = cfg["outbounds"].as_array().unwrap();
+
+        assert!(
+            obs.iter().all(|v| v["tag"] != "hk-only"),
+            "hk-only should be removed"
+        );
+        assert!(
+            obs.iter().all(|v| v["tag"] != "group-a"),
+            "group-a should cascade-removed"
+        );
+        assert!(
+            obs.iter().all(|v| v["tag"] != "group-b"),
+            "group-b should cascade-removed"
+        );
+        assert!(
+            obs.iter().any(|v| v["tag"] == "direct"),
+            "direct must remain"
+        );
     }
 
     #[test]
