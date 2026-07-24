@@ -59,10 +59,14 @@ fn apply_change(
     // Build new relay proxy group
     let mut new_proxy_group = vec![];
 
+    // Names feeding the auto-generated "Proxy or Direct" / "Force proxy or
+    // Direct" groups. Proxies flagged with `no-auto-group` are kept out of
+    // these two groups (but still added to `proxies` and usable elsewhere).
     let local_proxy_name = local
         .proxies()
         .get_vec()
         .iter()
+        .filter(|proxy| !Proxy::is_no_auto_group(proxy))
         .map(|proxy| get_name(proxy).unwrap())
         .collect::<Vec<_>>();
 

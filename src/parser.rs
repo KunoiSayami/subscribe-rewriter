@@ -14,11 +14,28 @@ mod proxies {
         #[serde(rename = "dialer-proxy", skip_serializing_if = "Option::is_none")]
         dialer_proxy: Option<String>,
         udp: bool,
+        /// When set, this proxy is kept out of the auto-generated
+        /// "Proxy or Direct" / "Force proxy or Direct" select groups.
+        /// Stripped before serialization so it never leaks into the output.
+        // Accepted on input, stripped on output. Read via
+        // `is_no_auto_group` off the raw value rather than this field.
+        #[serde(rename = "no-auto-group", default, skip_serializing)]
+        #[allow(dead_code)]
+        no_auto_group: bool,
     }
 
     impl Proxy {
         pub fn password(&self) -> &str {
             &self.password
+        }
+
+        /// Read the `no-auto-group` flag directly from a raw proxy value.
+        /// Returns `false` when the key is absent or not a boolean.
+        pub fn is_no_auto_group(value: &serde_yaml::Value) -> bool {
+            value
+                .get("no-auto-group")
+                .and_then(serde_yaml::Value::as_bool)
+                .unwrap_or(false)
         }
 
         pub fn replace_dialer_proxy(value: &mut serde_yaml::Value, target: &str) {
@@ -54,6 +71,7 @@ mod proxies {
                 password: "114514".into(),
                 dialer_proxy: None,
                 udp: true,
+                no_auto_group: false,
             }
         }
     }
@@ -1383,5 +1401,27 @@ mod tests {
         let mut value = make_proxy_value(None);
         Proxy::replace_dialer_proxy(&mut value, "my-proxy");
         assert_eq!(get_dialer_proxy(&value), None);
+    }
+
+    #[test]
+    fn no_auto_group_defaults_to_false() {
+        let value = make_proxy_value(None);
+        assert!(!Proxy::is_no_auto_group(&value));
+    }
+
+    #[test]
+    fn no_auto_group_reads_flag() {
+        let mut value = make_proxy_value(None);
+        value["no-auto-group"] = true.into();
+        assert!(Proxy::is_no_auto_group(&value));
+    }
+
+    #[test]
+    fn no_auto_group_stripped_on_serialize() {
+        let mut value = make_proxy_value(None);
+        value["no-auto-group"] = true.into();
+        let proxy: Proxy = serde_yaml::from_value(value).unwrap();
+        let out = serde_yaml::to_value(&proxy).unwrap();
+        assert!(out.get("no-auto-group").is_none());
     }
 }
