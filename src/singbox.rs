@@ -362,7 +362,7 @@ fn expand_all(entry: &mut Value, proxy_tags: &[String], config_tags: &[String]) 
     let filtered_config = apply_filter(config_tags, &filter_rules);
     let filtered_upstream = apply_filter(&upstream_tags, &filter_rules);
 
-    let arr = match entry["outbounds"].as_array_mut() {
+    let arr = match entry.get_mut("outbounds").and_then(Value::as_array_mut) {
         Some(a) => a,
         None => return,
     };
@@ -426,7 +426,7 @@ fn merge_outbounds(
         }
 
         for entry in existing.iter_mut() {
-            if let Some(arr) = entry["outbounds"].as_array_mut() {
+            if let Some(arr) = entry.get_mut("outbounds").and_then(Value::as_array_mut) {
                 arr.retain(|v| v.as_str().map(|t| !empty_tags.contains(t)).unwrap_or(true));
             }
         }
@@ -915,6 +915,35 @@ mod tests {
         let main_outs = main["outbounds"].as_array().unwrap();
         assert!(!main_outs.contains(&json!("hk-only")));
         assert!(main_outs.contains(&json!("🎯 全球直连")));
+    }
+
+    #[test]
+    fn prune_does_not_inject_null_outbounds_field() {
+        // Pruning must not add an "outbounds": null key to leaf outbounds that
+        // never had one (e.g. a plain `direct`).
+        let raw = "trojan=h.example.com:443, password=pw, tls-host=s.example.com, over-tls=true, tls-verification=false, tag=JP Node\n";
+        let base = json!({
+            "outbounds": [
+                {
+                    "type": "selector", "tag": "hk-only", "outbounds": ["{all}"],
+                    "filter": [{"action": "include", "keywords": ["HK|香港"]}]
+                },
+                {"tag": "🎯 全球直连", "type": "direct"},
+            ],
+        });
+        let cfg = convert(raw, Some(&base), &[], &[], &[], "🎯 全球直连");
+        let obs = cfg["outbounds"].as_array().unwrap();
+        let direct = find_by_tag(obs, "🎯 全球直连");
+        assert!(
+            direct.get("outbounds").is_none(),
+            "direct outbound gained a null `outbounds` field: {direct}"
+        );
+        assert!(
+            obs.iter()
+                .all(|v| v.get("outbounds").map(|o| !o.is_null()).unwrap_or(true)),
+            "some outbound has a null `outbounds` field: {}",
+            cfg["outbounds"]
+        );
     }
 
     #[test]
