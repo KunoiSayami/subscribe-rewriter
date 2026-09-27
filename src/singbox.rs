@@ -663,8 +663,9 @@ pub fn convert(
 /// Every `wireguard` entry in `endpoints` (or legacy `outbounds`) whose tag is in
 /// `managed_tags` is either patched with `selected`'s fields (when its tag matches)
 /// or removed together with references to it from group `outbounds` lists,
-/// selector `default`, `route.rules` and `route.final`. Unmanaged entries are
-/// left untouched. Call this on the base before [`convert`] so that groups left
+/// selector `default`, `route.rules` (`outbound` action and `preferred_by`),
+/// `route.final` and `dns.rules` (`outbound` and `preferred_by` matches).
+/// `detour` references are not rewritten. Unmanaged entries are left untouched. Call this on the base before [`convert`] so that groups left
 /// empty by the removal are pruned there.
 pub fn apply_wireguard(cfg: &mut Value, managed_tags: &[&str], selected: Option<(&str, &Value)>) {
     let mut removed: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -716,7 +717,10 @@ pub fn apply_wireguard(cfg: &mut Value, managed_tags: &[&str], selected: Option<
 
     if let Some(route) = cfg.get_mut("route").and_then(Value::as_object_mut) {
         if let Some(rules) = route.get_mut("rules").and_then(Value::as_array_mut) {
-            rules.retain(|r| !r["outbound"].as_str().is_some_and(|t| removed.contains(t)));
+            rules.retain_mut(|r| {
+                !r["outbound"].as_str().is_some_and(|t| removed.contains(t))
+                    && prune_rule_match(r, &["preferred_by"], &removed)
+            });
         }
         if route
             .get("final")
@@ -726,6 +730,41 @@ pub fn apply_wireguard(cfg: &mut Value, managed_tags: &[&str], selected: Option<
             route.remove("final");
         }
     }
+
+    if let Some(rules) = cfg
+        .get_mut("dns")
+        .and_then(|d| d.get_mut("rules"))
+        .and_then(Value::as_array_mut)
+    {
+        rules.retain_mut(|r| prune_rule_match(r, &["outbound", "preferred_by"], &removed));
+    }
+}
+
+/// Strip `removed` tags from the listable match `fields` of a rule, recursing
+/// into logical sub-rules. Returns `false` when a field ends up empty: dropping
+/// just that condition would widen what the rule matches, so the caller should
+/// drop the whole top-level rule instead.
+fn prune_rule_match(
+    rule: &mut Value,
+    fields: &[&str],
+    removed: &std::collections::HashSet<String>,
+) -> bool {
+    if let Some(sub) = rule.get_mut("rules").and_then(Value::as_array_mut)
+        && !sub.iter_mut().all(|r| prune_rule_match(r, fields, removed))
+    {
+        return false;
+    }
+    let Some(obj) = rule.as_object_mut() else {
+        return true;
+    };
+    fields.iter().all(|field| match obj.get_mut(*field) {
+        Some(Value::String(t)) => !removed.contains(t.as_str()),
+        Some(Value::Array(list)) => {
+            list.retain(|v| v.as_str().map(|t| !removed.contains(t)).unwrap_or(true));
+            !list.is_empty()
+        }
+        _ => true,
+    })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1076,8 +1115,21 @@ mod tests {
                 "rules": [
                     {"ip_cidr": ["192.168.1.0/24"], "outbound": "wg-home"},
                     {"domain": ["example.com"], "outbound": "direct"},
+                    {"preferred_by": "wg-home", "outbound": "direct"},
+                    {"preferred_by": ["wg-home", "wg-static"], "outbound": "direct"},
+                    {
+                        "type": "logical", "mode": "and", "outbound": "direct",
+                        "rules": [{"domain": ["a.com"]}, {"preferred_by": ["wg-home"]}],
+                    },
                 ],
                 "final": "wg-home",
+            },
+            "dns": {
+                "rules": [
+                    {"outbound": ["wg-home"], "server": "remote"},
+                    {"outbound": ["wg-home", "direct"], "server": "local"},
+                    {"domain": ["example.com"], "server": "local"},
+                ],
             },
         })
     }
@@ -1092,7 +1144,8 @@ mod tests {
         assert_eq!(ep["address"][0], "10.0.0.2/32");
         assert_eq!(ep["peers"][0]["port"], 51820);
         assert_eq!(base["route"]["final"], "wg-home");
-        assert_eq!(base["route"]["rules"].as_array().unwrap().len(), 2);
+        assert_eq!(base["route"]["rules"].as_array().unwrap().len(), 5);
+        assert_eq!(base["dns"]["rules"].as_array().unwrap().len(), 3);
     }
 
     #[test]
@@ -1104,8 +1157,14 @@ mod tests {
         assert_eq!(eps[0]["tag"], "wg-static");
         assert!(base["route"].get("final").is_none());
         let rules = base["route"]["rules"].as_array().unwrap();
-        assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0]["outbound"], "direct");
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0]["domain"][0], "example.com");
+        assert_eq!(rules[1]["preferred_by"], json!(["wg-static"]));
+
+        let dns_rules = base["dns"]["rules"].as_array().unwrap();
+        assert_eq!(dns_rules.len(), 2);
+        assert_eq!(dns_rules[0]["outbound"], json!(["direct"]));
+        assert_eq!(dns_rules[1]["domain"][0], "example.com");
 
         // `wg-only` becomes empty and is pruned by convert's cascade.
         let cfg = convert("", Some(&base), &[], &[], &[], "direct");

@@ -242,10 +242,14 @@ Each device needs its own WireGuard key pair, and some devices should not get th
 
 Every `wireguard` endpoint whose tag appears in `singbox.wireguard` is *managed*:
 
-- With `?wg=<name>`, the matching endpoint gets that entry's `private_key` and `address`.
-- Otherwise, the endpoint is removed. References to it in group `outbounds` lists, a selector's `default`, `route.rules` (rules whose `outbound` is that tag), and `route.final` are removed too. Groups left empty by this are pruned as usual.
+- With `?wg=<name>`, the matching endpoint gets that entry's `private_key` and `address`. `address` is required by sing-box, so either the base endpoint or the key entry must provide it.
+- Otherwise, the endpoint is removed and references to its tag are cleaned up:
+  - group `outbounds` lists and a selector's `default` (groups left empty are pruned as usual);
+  - `route.rules` whose `outbound` is that tag;
+  - `route.final`;
+  - `preferred_by` in `route.rules` and `dns.rules`, and the `outbound` match in `dns.rules`. The tag is removed from the list; if the list becomes empty, the whole top-level rule is dropped, since matching without that condition would be broader. This also applies inside logical rules.
 
-Unmanaged endpoints are left as-is. Legacy `wireguard` entries in `outbounds` are handled the same way. Other references, such as `dns.servers[].detour` or another outbound's `detour`, are **not** rewritten.
+Unmanaged endpoints are left as-is. Legacy `wireguard` entries in `outbounds` are handled the same way, but sing-box removed that form in 1.13.0, so this only matters for 1.11 and 1.12 clients. `detour` references (on outbounds, endpoints, DNS servers, rule-set `download_detour`, etc.) are **not** rewritten. Don't point them at a managed WireGuard tag, or sing-box will fail to start when `wg` is omitted.
 
 The private key lives only in `config.yaml`; the URL carries just the device name.
 
