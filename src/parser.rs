@@ -474,6 +474,37 @@ mod ruleset_config {
         /// Defaults to "direct" if unset.
         #[serde(default, alias = "direct-tag")]
         pub direct_tag: Option<String>,
+        /// Per-device WireGuard keys, selected via `?wg=<name>`.
+        #[serde(default)]
+        pub wireguard: Vec<WireguardKey>,
+    }
+
+    #[derive(Clone, Debug, Deserialize)]
+    pub struct WireguardKey {
+        name: String,
+        /// Tag of the `wireguard` endpoint in the sing-box base config.
+        tag: String,
+        #[serde(alias = "private-key")]
+        private_key: String,
+        #[serde(default)]
+        address: Vec<String>,
+    }
+
+    impl WireguardKey {
+        pub fn name(&self) -> &str {
+            &self.name
+        }
+        pub fn tag(&self) -> &str {
+            &self.tag
+        }
+        /// Fields merged into the matching endpoint when this key is selected.
+        pub fn patch(&self) -> serde_json::Value {
+            let mut patch = serde_json::json!({ "private_key": self.private_key });
+            if !self.address.is_empty() {
+                patch["address"] = serde_json::json!(self.address);
+            }
+            patch
+        }
     }
 }
 
@@ -575,7 +606,7 @@ mod configure {
 
     use crate::parser::ProxyGroup;
     use crate::parser::external_config::ExternalConfig;
-    use crate::parser::ruleset_config::{SingboxConfigure, SingboxRuleSetEntry};
+    use crate::parser::ruleset_config::{SingboxConfigure, SingboxRuleSetEntry, WireguardKey};
 
     use anyhow::Context;
 
@@ -649,6 +680,10 @@ mod configure {
 
         pub fn singbox_direct_tag(&self) -> Option<&str> {
             self.singbox.direct_tag.as_deref()
+        }
+
+        pub fn singbox_wireguard(&self) -> &[WireguardKey] {
+            &self.singbox.wireguard
         }
 
         /// Load and return the raw YAML value without resolving inheritance or
@@ -943,7 +978,7 @@ mod external_config {
 
 mod share_config {
     use super::{Keyword, Proxies, Rules};
-    use crate::parser::ruleset_config::SingboxRuleSetEntry;
+    use crate::parser::ruleset_config::{SingboxRuleSetEntry, WireguardKey};
     use crate::parser::{Configure, ProxyGroup, UpStream};
     use log::{debug, error, info};
     use serde::Deserialize;
@@ -1075,6 +1110,7 @@ mod share_config {
         singbox_bin_path: Option<String>,
         singbox_direct_tag: Option<String>,
         singbox_rule_sets: Vec<SingboxRuleSetEntry>,
+        singbox_wireguard: Vec<WireguardKey>,
     }
 
     impl ShareConfig {
@@ -1104,6 +1140,7 @@ mod share_config {
                 groups: local_configure.proxy_groups().clone(),
                 test_url: local_configure.test_url(),
                 singbox_rule_sets: local_configure.singbox_rule_sets().clone(),
+                singbox_wireguard: local_configure.singbox_wireguard().to_vec(),
                 singbox_bin_path: local_configure.singbox_bin_path().map(str::to_owned),
                 singbox_direct_tag: local_configure.singbox_direct_tag().map(str::to_owned),
                 singbox_config_path: local_configure.singbox_config().map(str::to_owned),
@@ -1161,6 +1198,7 @@ mod share_config {
             self.groups = local_configure.proxy_groups().clone();
             self.test_url = local_configure.test_url();
             self.singbox_rule_sets = local_configure.singbox_rule_sets().clone();
+            self.singbox_wireguard = local_configure.singbox_wireguard().to_vec();
             self.singbox_bin_path = local_configure.singbox_bin_path().map(str::to_owned);
             self.singbox_direct_tag = local_configure.singbox_direct_tag().map(str::to_owned);
             self.singbox_config_path = local_configure.singbox_config().map(str::to_owned);
@@ -1216,6 +1254,10 @@ mod share_config {
 
         pub fn singbox_direct_tag(&self) -> &str {
             self.singbox_direct_tag.as_deref().unwrap_or("direct")
+        }
+
+        pub fn singbox_wireguard(&self) -> &[WireguardKey] {
+            &self.singbox_wireguard
         }
 
         pub fn briefing(&self) -> String {

@@ -17,6 +17,7 @@ pub mod v2 {
     pub struct QueryParams {
         method: Option<String>,
         log: Option<String>,
+        wg: Option<String>,
     }
 
     #[derive(Clone)]
@@ -64,6 +65,7 @@ pub mod v2 {
         sub_id: String,
         method: &str,
         log_level: Option<String>,
+        wg: Option<String>,
         share_config: Arc<RwLock<ShareConfig>>,
     ) -> Result<Response<String>, ErrorCode> {
         let share_config = share_config.read().await;
@@ -106,9 +108,29 @@ pub mod v2 {
                 format!("attachment; filename=Clash_sample.yaml"),
             )
         } else if method.eq("singbox") {
+            let wg_keys = share_config.singbox_wireguard();
+            let selected = match wg.as_deref() {
+                Some(name) => Some(
+                    wg_keys
+                        .iter()
+                        .find(|k| k.name() == name)
+                        .ok_or(ErrorCode::NotAcceptable)?,
+                ),
+                None => None,
+            };
+            let mut base = share_config.singbox_base_for(&sub_id).cloned();
+            if let Some(base) = base.as_mut() {
+                let managed_tags: Vec<&str> = wg_keys.iter().map(|k| k.tag()).collect();
+                let patch = selected.map(|k| k.patch());
+                crate::singbox::apply_wireguard(
+                    base,
+                    &managed_tags,
+                    selected.map(|k| k.tag()).zip(patch.as_ref()),
+                );
+            }
             let mut cfg = crate::singbox::convert(
                 &content,
-                share_config.singbox_base_for(&sub_id),
+                base.as_ref(),
                 share_config.proxies().get_vec(),
                 &share_config.rules().get_element(),
                 share_config.manual_insert_proxies(),
@@ -281,6 +303,7 @@ pub mod v2 {
             sub_id,
             &params.method.clone().unwrap_or_default(),
             params.log.clone(),
+            params.wg.clone(),
             share_configure,
         )
         .await

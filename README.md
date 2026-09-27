@@ -42,6 +42,7 @@ clashrw [OPTIONS]
 | `GET /<prefix>/<sub_id>` | Returns the rewritten Clash YAML config. |
 | `GET /<prefix>/<sub_id>?method=raw` | Returns the raw upstream content without rewriting. |
 | `GET /<prefix>/<sub_id>?method=singbox` | Converts the `singbox` upstream (Surge-format) to a sing-box JSON config. Returns `406` if no `singbox` URL is configured for that subscription. |
+| `GET /<prefix>/<sub_id>?method=singbox&wg=<name>` | Same as above, but fills in the WireGuard key pair `<name>` from `singbox.wireguard`. Returns `406` if `<name>` is unknown. |
 | `GET /rule-set/<tag>` | Fetches the upstream rule-set source JSON for `<tag>`, applies local add/remove patches, compiles it to a binary `.srs` file, and returns it as `application/octet-stream`. Returns `404` if the tag is not configured. |
 | `GET /rule-set/<tag>.srs` | Same as above (explicit `.srs` suffix). |
 | `GET /rule-set/<tag>.json` | Returns the patched rule-set source as pretty-printed JSON instead of compiling to binary. |
@@ -154,6 +155,19 @@ singbox:
   # Defaults to "direct" if unset.
   direct_tag: "DIRECT"
 
+  # Per-device WireGuard keys, selected with ?method=singbox&wg=<name>
+  wireguard:
+    - name: phone
+      tag: wg-home                      # tag of the wireguard endpoint in the base config
+      private_key: "yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk="
+      address:                          # optional; overrides the endpoint's address
+        - 10.0.0.2/32
+    - name: laptop
+      tag: wg-home
+      private_key: "..."
+      address:
+        - 10.0.0.3/32
+
   # Rule-sets to compile and serve at GET /rule-set/<tag>
   rule_sets:
     - tag: cn-domain
@@ -209,6 +223,31 @@ The resulting `outbounds` array served to the client will be:
 ```
 
 If `singbox.config_path` is omitted, those three fixed outbounds are generated automatically and the rest of the config skeleton is minimal.
+
+### WireGuard Key Pairs
+
+Each device needs its own WireGuard key pair, and some devices should not get the tunnel at all. Put the shared part of the endpoint (peer, MTU, etc.) in the base config's `endpoints` array, leaving out `private_key`:
+
+```json
+"endpoints": [
+  {
+    "type": "wireguard",
+    "tag": "wg-home",
+    "peers": [
+      { "address": "vpn.example.com", "port": 51820, "public_key": "...", "allowed_ips": ["0.0.0.0/0"] }
+    ]
+  }
+]
+```
+
+Every `wireguard` endpoint whose tag appears in `singbox.wireguard` is *managed*:
+
+- With `?wg=<name>`, the matching endpoint gets that entry's `private_key` and `address`.
+- Otherwise, the endpoint is removed. References to it in group `outbounds` lists, a selector's `default`, `route.rules` (rules whose `outbound` is that tag), and `route.final` are removed too. Groups left empty by this are pruned as usual.
+
+Unmanaged endpoints are left as-is. Legacy `wireguard` entries in `outbounds` are handled the same way. Other references, such as `dns.servers[].detour` or another outbound's `detour`, are **not** rewritten.
+
+The private key lives only in `config.yaml`; the URL carries just the device name.
 
 ### sing-box Rule-Set Serving
 

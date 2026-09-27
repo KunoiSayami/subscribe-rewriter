@@ -656,6 +656,78 @@ pub fn convert(
     cfg
 }
 
+// ── WireGuard per-device keys ────────────────────────────────────────────────
+
+/// Resolve WireGuard endpoints in a base config against per-device keys.
+///
+/// Every `wireguard` entry in `endpoints` (or legacy `outbounds`) whose tag is in
+/// `managed_tags` is either patched with `selected`'s fields (when its tag matches)
+/// or removed together with references to it from group `outbounds` lists,
+/// selector `default`, `route.rules` and `route.final`. Unmanaged entries are
+/// left untouched. Call this on the base before [`convert`] so that groups left
+/// empty by the removal are pruned there.
+pub fn apply_wireguard(cfg: &mut Value, managed_tags: &[&str], selected: Option<(&str, &Value)>) {
+    let mut removed: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for key in ["endpoints", "outbounds"] {
+        let Some(arr) = cfg.get_mut(key).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        arr.retain_mut(|entry| {
+            if type_of(entry) != Some("wireguard") {
+                return true;
+            }
+            let Some(tag) = tag_of(entry).filter(|t| managed_tags.contains(t)) else {
+                return true;
+            };
+            match selected {
+                Some((selected_tag, patch)) if selected_tag == tag => {
+                    if let (Some(obj), Some(patch)) = (entry.as_object_mut(), patch.as_object()) {
+                        obj.extend(patch.clone());
+                    }
+                    true
+                }
+                _ => {
+                    removed.insert(tag.to_string());
+                    false
+                }
+            }
+        });
+    }
+
+    if removed.is_empty() {
+        return;
+    }
+
+    if let Some(arr) = cfg.get_mut("outbounds").and_then(Value::as_array_mut) {
+        for entry in arr.iter_mut() {
+            if let Some(list) = entry.get_mut("outbounds").and_then(Value::as_array_mut) {
+                list.retain(|v| v.as_str().map(|t| !removed.contains(t)).unwrap_or(true));
+            }
+            if entry["default"]
+                .as_str()
+                .is_some_and(|t| removed.contains(t))
+                && let Some(obj) = entry.as_object_mut()
+            {
+                obj.remove("default");
+            }
+        }
+    }
+
+    if let Some(route) = cfg.get_mut("route").and_then(Value::as_object_mut) {
+        if let Some(rules) = route.get_mut("rules").and_then(Value::as_array_mut) {
+            rules.retain(|r| !r["outbound"].as_str().is_some_and(|t| removed.contains(t)));
+        }
+        if route
+            .get("final")
+            .and_then(Value::as_str)
+            .is_some_and(|t| removed.contains(t))
+        {
+            route.remove("final");
+        }
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -987,6 +1059,61 @@ mod tests {
             obs.iter().any(|v| v["tag"] == "direct"),
             "direct must remain"
         );
+    }
+
+    fn wg_base() -> Value {
+        json!({
+            "endpoints": [
+                {"type": "wireguard", "tag": "wg-home", "peers": [{"address": "1.2.3.4", "port": 51820}]},
+                {"type": "wireguard", "tag": "wg-static", "private_key": "static"},
+            ],
+            "outbounds": [
+                {"type": "selector", "tag": "main", "default": "wg-home", "outbounds": ["wg-home", "direct"]},
+                {"type": "selector", "tag": "wg-only", "outbounds": ["wg-home"]},
+                {"type": "direct", "tag": "direct"},
+            ],
+            "route": {
+                "rules": [
+                    {"ip_cidr": ["192.168.1.0/24"], "outbound": "wg-home"},
+                    {"domain": ["example.com"], "outbound": "direct"},
+                ],
+                "final": "wg-home",
+            },
+        })
+    }
+
+    #[test]
+    fn wireguard_selected_key_is_injected() {
+        let mut base = wg_base();
+        let patch = json!({"private_key": "PRIV", "address": ["10.0.0.2/32"]});
+        apply_wireguard(&mut base, &["wg-home"], Some(("wg-home", &patch)));
+        let ep = &base["endpoints"][0];
+        assert_eq!(ep["private_key"], "PRIV");
+        assert_eq!(ep["address"][0], "10.0.0.2/32");
+        assert_eq!(ep["peers"][0]["port"], 51820);
+        assert_eq!(base["route"]["final"], "wg-home");
+        assert_eq!(base["route"]["rules"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn wireguard_unselected_endpoint_and_refs_removed() {
+        let mut base = wg_base();
+        apply_wireguard(&mut base, &["wg-home"], None);
+        let eps = base["endpoints"].as_array().unwrap();
+        assert_eq!(eps.len(), 1, "unmanaged endpoint must stay");
+        assert_eq!(eps[0]["tag"], "wg-static");
+        assert!(base["route"].get("final").is_none());
+        let rules = base["route"]["rules"].as_array().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0]["outbound"], "direct");
+
+        // `wg-only` becomes empty and is pruned by convert's cascade.
+        let cfg = convert("", Some(&base), &[], &[], &[], "direct");
+        let obs = cfg["outbounds"].as_array().unwrap();
+        assert!(obs.iter().all(|v| v["tag"] != "wg-only"));
+        let main = find_by_tag(obs, "main");
+        assert!(main.get("default").is_none());
+        assert_eq!(main["outbounds"], json!(["direct"]));
     }
 
     #[test]
