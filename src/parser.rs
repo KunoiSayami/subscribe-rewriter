@@ -751,18 +751,9 @@ mod configure {
                 log::debug!("Load {rules_count} from external configure");
             }
 
-            let singbox_base = if let Some(path) = ret.singbox_config() {
-                match tokio::fs::read_to_string(path).await {
-                    Ok(s) => json5::from_str::<serde_json::Value>(&s)
-                        .inspect_err(|e| log::warn!("Parse singbox config {path}: {e:?}"))
-                        .ok(),
-                    Err(e) => {
-                        log::warn!("Read singbox config {path}: {e:?}");
-                        None
-                    }
-                }
-            } else {
-                None
+            let singbox_base = match ret.singbox_config() {
+                Some(path) => Some(Self::load_singbox_base(path).await?),
+                None => None,
             };
 
             if let Some(ref base) = singbox_base {
@@ -784,33 +775,35 @@ mod configure {
                 }
             }
 
-            let per_sub_singbox_bases = Self::load_per_sub_singbox_bases(ret.upstream()).await;
+            let per_sub_singbox_bases = Self::load_per_sub_singbox_bases(ret.upstream()).await?;
 
             Ok((ret, singbox_base, per_sub_singbox_bases))
         }
 
+        /// Read and parse a sing-box base JSON(5) file. A configured base that
+        /// cannot be loaded is an error rather than a silent fallback to the
+        /// minimal skeleton.
+        pub async fn load_singbox_base(path: &str) -> anyhow::Result<serde_json::Value> {
+            let s = tokio::fs::read_to_string(path)
+                .await
+                .with_context(|| format!("read singbox config {path}"))?;
+            json5::from_str(&s).with_context(|| format!("parse singbox config {path}"))
+        }
+
         pub async fn load_per_sub_singbox_bases(
             upstreams: &[UpStream],
-        ) -> std::collections::HashMap<String, serde_json::Value> {
+        ) -> anyhow::Result<std::collections::HashMap<String, serde_json::Value>> {
             let mut map = std::collections::HashMap::new();
             for up in upstreams {
                 let Some(path) = up.singbox_config_path() else {
                     continue;
                 };
-                let base = match tokio::fs::read_to_string(path).await {
-                    Ok(s) => json5::from_str::<serde_json::Value>(&s)
-                        .inspect_err(|e| log::warn!("Parse per-sub singbox config {path}: {e:?}"))
-                        .ok(),
-                    Err(e) => {
-                        log::warn!("Read per-sub singbox config {path}: {e:?}");
-                        None
-                    }
-                };
-                if let Some(base) = base {
-                    map.insert(up.sub_id().to_string(), base);
-                }
+                let base = Self::load_singbox_base(path)
+                    .await
+                    .with_context(|| format!("per-sub singbox config of {}", up.sub_id()))?;
+                map.insert(up.sub_id().to_string(), base);
             }
-            map
+            Ok(map)
         }
 
         /// Resolve `inherit` chains in `self.upstream` in-place.
@@ -1349,21 +1342,16 @@ mod share_config {
                             cfg.singbox_config_path().map(str::to_owned)
                         };
                         if let Some(path) = path {
-                            let singbox_base = match tokio::fs::read_to_string(&path).await {
-                                Ok(s) => json5::from_str::<serde_json::Value>(&s)
-                                    .inspect_err(|e| {
-                                        log::warn!("Parse singbox config {path}: {e:?}")
-                                    })
-                                    .ok(),
-                                Err(e) => {
-                                    log::warn!("Read singbox config {path}: {e:?}");
-                                    None
+                            // Keep the last good base on failure; editors may
+                            // expose a half-written file to the watcher.
+                            match Configure::load_singbox_base(&path).await {
+                                Ok(base) => {
+                                    configure_file.write().await.update_singbox_base(Some(base))
                                 }
-                            };
-                            configure_file
-                                .write()
-                                .await
-                                .update_singbox_base(singbox_base);
+                                Err(e) => error!(
+                                    "Reload singbox config failed, keeping previous one: {e:?}"
+                                ),
+                            }
                         }
                     }
                     UpdateConfigureEvent::Terminate => break,
