@@ -390,13 +390,16 @@ fn expand_all(entry: &mut Value, proxy_tags: &[String], config_tags: &[String]) 
 /// - `selector`: if absent, a new one with `default: "urltest"` is prepended.
 /// - `urltest`: if absent, a new one with all proxy tags is prepended.
 /// - Converted proxy outbounds are appended at the end.
+///
+/// Also returns the tags of groups pruned for being empty, so references to
+/// them elsewhere in the config can be removed.
 fn merge_outbounds(
     mut existing: Vec<Value>,
     proxy_tags: &[String],
     config_tags: &[String],
     proxies: Vec<Value>,
     direct_tag: &str,
-) -> Vec<Value> {
+) -> (Vec<Value>, std::collections::HashSet<String>) {
     let has_direct = existing.iter().any(|v| tag_of(v) == Some(direct_tag));
     let has_selector = existing.iter().any(|v| type_of(v) == Some("selector"));
     let has_urltest = existing.iter().any(|v| type_of(v) == Some("urltest"));
@@ -409,6 +412,7 @@ fn merge_outbounds(
     // cross-references from other entries each round, until no more are found.
     // This handles cascading emptiness: removing A may leave B with only A in
     // its list, making B empty too.
+    let mut pruned: std::collections::HashSet<String> = std::collections::HashSet::new();
     loop {
         let empty_tags: std::collections::HashSet<String> = existing
             .iter()
@@ -431,6 +435,7 @@ fn merge_outbounds(
             }
         }
         existing.retain(|e| tag_of(e).map(|t| !empty_tags.contains(t)).unwrap_or(true));
+        pruned.extend(empty_tags);
     }
 
     if !has_direct {
@@ -450,7 +455,7 @@ fn merge_outbounds(
     }
 
     existing.extend(proxies);
-    existing
+    (existing, pruned)
 }
 
 // ── Clash rule → sing-box route rule ─────────────────────────────────────────
@@ -630,17 +635,15 @@ pub fn convert(
         Some(base) => {
             let mut cfg = base.clone();
             let existing = cfg["outbounds"].as_array().cloned().unwrap_or_default();
-            cfg["outbounds"] = json!(merge_outbounds(
-                existing,
-                &proxy_tags,
-                &config_tags,
-                proxies,
-                direct_tag,
-            ));
+            let (outbounds, pruned) =
+                merge_outbounds(existing, &proxy_tags, &config_tags, proxies, direct_tag);
+            cfg["outbounds"] = json!(outbounds);
+            prune_tag_references(&mut cfg, &pruned);
             cfg
         }
         None => {
-            let outbounds = merge_outbounds(vec![], &proxy_tags, &config_tags, proxies, direct_tag);
+            let (outbounds, _) =
+                merge_outbounds(vec![], &proxy_tags, &config_tags, proxies, direct_tag);
             json!({
                 "log":      {},
                 "dns":      {},
@@ -662,10 +665,8 @@ pub fn convert(
 ///
 /// Every `wireguard` entry in `endpoints` (or legacy `outbounds`) whose tag is in
 /// `managed_tags` is either patched with `selected`'s fields (when its tag matches)
-/// or removed together with references to it from group `outbounds` lists,
-/// selector `default`, `route.rules` (`outbound` action and `preferred_by`),
-/// `route.final` and `dns.rules` (`outbound` and `preferred_by` matches).
-/// `detour` references are not rewritten. Unmanaged entries are left untouched. Call this on the base before [`convert`] so that groups left
+/// or removed together with references to it (see [`prune_tag_references`]).
+/// Unmanaged entries are left untouched. Call this on the base before [`convert`] so that groups left
 /// empty by the removal are pruned there.
 pub fn apply_wireguard(cfg: &mut Value, managed_tags: &[&str], selected: Option<(&str, &Value)>) {
     let mut removed: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -696,6 +697,15 @@ pub fn apply_wireguard(cfg: &mut Value, managed_tags: &[&str], selected: Option<
         });
     }
 
+    prune_tag_references(cfg, &removed);
+}
+
+/// Remove references to `removed` outbound/endpoint tags so sing-box does not
+/// fail with `outbound not found`: group `outbounds` lists, selector `default`,
+/// `route.rules` (`outbound` action and `preferred_by`), `route.final` and
+/// `dns.rules` (`outbound` and `preferred_by` matches). `detour` references are
+/// not rewritten.
+fn prune_tag_references(cfg: &mut Value, removed: &std::collections::HashSet<String>) {
     if removed.is_empty() {
         return;
     }
@@ -719,7 +729,7 @@ pub fn apply_wireguard(cfg: &mut Value, managed_tags: &[&str], selected: Option<
         if let Some(rules) = route.get_mut("rules").and_then(Value::as_array_mut) {
             rules.retain_mut(|r| {
                 !r["outbound"].as_str().is_some_and(|t| removed.contains(t))
-                    && prune_rule_match(r, &["preferred_by"], &removed)
+                    && prune_rule_match(r, &["preferred_by"], removed)
             });
         }
         if route
@@ -736,7 +746,7 @@ pub fn apply_wireguard(cfg: &mut Value, managed_tags: &[&str], selected: Option<
         .and_then(|d| d.get_mut("rules"))
         .and_then(Value::as_array_mut)
     {
-        rules.retain_mut(|r| prune_rule_match(r, &["outbound", "preferred_by"], &removed));
+        rules.retain_mut(|r| prune_rule_match(r, &["outbound", "preferred_by"], removed));
     }
 }
 
@@ -1055,6 +1065,51 @@ mod tests {
             "some outbound has a null `outbounds` field: {}",
             cfg["outbounds"]
         );
+    }
+
+    #[test]
+    fn pruned_group_references_removed_from_route_and_dns() {
+        let raw = "trojan=h.example.com:443, password=pw, tls-host=s.example.com, over-tls=true, tls-verification=false, tag=JP Node\n";
+        let base = json!({
+            "outbounds": [
+                {
+                    "type": "selector", "tag": "hk-only", "outbounds": ["{all}"],
+                    "filter": [{"action": "include", "keywords": ["HK"]}]
+                },
+                {"type": "selector", "tag": "home", "outbounds": ["hk-only"]},
+                {
+                    "type": "selector", "tag": "main", "default": "home",
+                    "outbounds": ["home", "{all}"]
+                },
+                {"type": "direct", "tag": "direct"},
+            ],
+            "route": {
+                "rules": [
+                    {"ip_cidr": ["192.168.50.0/24"], "outbound": "home"},
+                    {"domain": ["a.com"], "outbound": "main"},
+                ],
+                "final": "hk-only",
+            },
+            "dns": {
+                "rules": [{"outbound": ["home", "main"], "server": "local"}],
+            },
+        });
+        let cfg = convert(raw, Some(&base), &[], &[], &[], "direct");
+        let obs = cfg["outbounds"].as_array().unwrap();
+        assert!(
+            obs.iter()
+                .all(|v| v["tag"] != "hk-only" && v["tag"] != "home")
+        );
+
+        let main = find_by_tag(obs, "main");
+        assert!(main.get("default").is_none());
+        assert_eq!(main["outbounds"], json!(["JP Node"]));
+
+        let rules = cfg["route"]["rules"].as_array().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0]["outbound"], "main");
+        assert!(cfg["route"].get("final").is_none());
+        assert_eq!(cfg["dns"]["rules"][0]["outbound"], json!(["main"]));
     }
 
     #[test]
