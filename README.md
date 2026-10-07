@@ -245,7 +245,7 @@ Each device needs its own WireGuard key pair, and some devices should not get th
 Every `wireguard` endpoint whose tag appears in `singbox.wireguard` is *managed*:
 
 - `?wg=` takes a comma-separated list of key names, e.g. `?wg=phone,phone-office`. Each selected key's endpoint gets that entry's `private_key` and `address`. `address` is required by sing-box, so either the base endpoint or the key entry must provide it.
-- Empty entries and unknown names are ignored. A key with `subs` is only served on those `sub_id`s; on any other subscription it is ignored as if unknown, so its private key cannot be fetched by guessing the name. Selecting two keys for the same tag returns `406`.
+- Empty entries and unknown names are ignored. A key with `subs` is only served on those `sub_id`s; on any other subscription it is ignored as if unknown, so its private key cannot be fetched by guessing the name. `subs` is matched exactly against the `sub_id` in the request URL, so an alias must be listed explicitly: `subs: [alice]` does not match a request to `alice`'s alias `alice-phone`, and vice versa. Listing only an alias binds the key to that one URL. Selecting two keys for the same tag returns `406`.
 - A managed endpoint with no selected key is removed and references to its tag are cleaned up:
   - group `outbounds` lists and a selector's `default` (groups left empty are pruned as usual);
   - `route.rules` whose `outbound` is that tag;

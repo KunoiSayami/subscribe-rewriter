@@ -820,7 +820,11 @@ mod configure {
                     );
                 }
                 for sub in key.subs() {
-                    if !ret.upstream().iter().any(|up| up.sub_id() == sub) {
+                    if !ret
+                        .upstream()
+                        .iter()
+                        .any(|up| up.sub_id() == sub || up.alias().iter().any(|a| a == sub))
+                    {
                         log::warn!(
                             "WireGuard key '{}' is bound to unknown sub_id '{sub}'",
                             key.name()
