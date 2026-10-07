@@ -664,11 +664,11 @@ pub fn convert(
 /// Resolve WireGuard endpoints in a base config against per-device keys.
 ///
 /// Every `wireguard` entry in `endpoints` (or legacy `outbounds`) whose tag is in
-/// `managed_tags` is either patched with `selected`'s fields (when its tag matches)
+/// `managed_tags` is either patched with the matching `selected` fields (keyed by tag)
 /// or removed together with references to it (see [`prune_tag_references`]).
 /// Unmanaged entries are left untouched. Call this on the base before [`convert`] so that groups left
 /// empty by the removal are pruned there.
-pub fn apply_wireguard(cfg: &mut Value, managed_tags: &[&str], selected: Option<(&str, &Value)>) {
+pub fn apply_wireguard(cfg: &mut Value, managed_tags: &[&str], selected: &[(&str, Value)]) {
     let mut removed: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for key in ["endpoints", "outbounds"] {
@@ -682,14 +682,14 @@ pub fn apply_wireguard(cfg: &mut Value, managed_tags: &[&str], selected: Option<
             let Some(tag) = tag_of(entry).filter(|t| managed_tags.contains(t)) else {
                 return true;
             };
-            match selected {
-                Some((selected_tag, patch)) if selected_tag == tag => {
+            match selected.iter().find(|(t, _)| *t == tag) {
+                Some((_, patch)) => {
                     if let (Some(obj), Some(patch)) = (entry.as_object_mut(), patch.as_object()) {
                         obj.extend(patch.clone());
                     }
                     true
                 }
-                _ => {
+                None => {
                     removed.insert(tag.to_string());
                     false
                 }
@@ -1193,7 +1193,7 @@ mod tests {
     fn wireguard_selected_key_is_injected() {
         let mut base = wg_base();
         let patch = json!({"private_key": "PRIV", "address": ["10.0.0.2/32"]});
-        apply_wireguard(&mut base, &["wg-home"], Some(("wg-home", &patch)));
+        apply_wireguard(&mut base, &["wg-home"], &[("wg-home", patch)]);
         let ep = &base["endpoints"][0];
         assert_eq!(ep["private_key"], "PRIV");
         assert_eq!(ep["address"][0], "10.0.0.2/32");
@@ -1206,7 +1206,7 @@ mod tests {
     #[test]
     fn wireguard_unselected_endpoint_and_refs_removed() {
         let mut base = wg_base();
-        apply_wireguard(&mut base, &["wg-home"], None);
+        apply_wireguard(&mut base, &["wg-home"], &[]);
         let eps = base["endpoints"].as_array().unwrap();
         assert_eq!(eps.len(), 1, "unmanaged endpoint must stay");
         assert_eq!(eps[0]["tag"], "wg-static");
@@ -1228,6 +1228,26 @@ mod tests {
         let main = find_by_tag(obs, "main");
         assert!(main.get("default").is_none());
         assert_eq!(main["outbounds"], json!(["direct"]));
+    }
+
+    #[test]
+    fn wireguard_multiple_selected_keys_are_injected() {
+        let mut base = json!({
+            "endpoints": [
+                {"type": "wireguard", "tag": "wg-home"},
+                {"type": "wireguard", "tag": "wg-office"},
+                {"type": "wireguard", "tag": "wg-lab"},
+            ],
+        });
+        let selected = [
+            ("wg-home", json!({"private_key": "HOME"})),
+            ("wg-office", json!({"private_key": "OFFICE"})),
+        ];
+        apply_wireguard(&mut base, &["wg-home", "wg-office", "wg-lab"], &selected);
+        let eps = base["endpoints"].as_array().unwrap();
+        assert_eq!(eps.len(), 2, "unselected managed endpoint must be removed");
+        assert_eq!(find_by_tag(eps, "wg-home")["private_key"], "HOME");
+        assert_eq!(find_by_tag(eps, "wg-office")["private_key"], "OFFICE");
     }
 
     #[test]

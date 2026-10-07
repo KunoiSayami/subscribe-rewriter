@@ -1,7 +1,7 @@
 pub mod v2 {
     use crate::apply_change;
     use crate::cache::{parse_remote_configure, read_or_fetch, read_srs_cache, write_srs_cache};
-    use crate::parser::ShareConfig;
+    use crate::parser::{ShareConfig, WireguardKey};
     use crate::ruleset;
     use anyhow::{Context, Error};
     use axum::Extension;
@@ -109,24 +109,19 @@ pub mod v2 {
             )
         } else if method.eq("singbox") {
             let wg_keys = share_config.singbox_wireguard();
-            let selected = match wg.as_deref() {
-                Some(name) => Some(
-                    wg_keys
-                        .iter()
-                        .find(|k| k.name() == name)
-                        .ok_or(ErrorCode::NotAcceptable)?,
-                ),
-                None => None,
-            };
+            let selected =
+                WireguardKey::select(wg_keys, wg.as_deref().unwrap_or_default(), &sub_id).map_err(
+                    |tag| {
+                        log::warn!("Multiple WireGuard keys selected for endpoint '{tag}'");
+                        ErrorCode::NotAcceptable
+                    },
+                )?;
             let mut base = share_config.singbox_base_for(&sub_id).cloned();
             if let Some(base) = base.as_mut() {
                 let managed_tags: Vec<&str> = wg_keys.iter().map(|k| k.tag()).collect();
-                let patch = selected.map(|k| k.patch());
-                crate::singbox::apply_wireguard(
-                    base,
-                    &managed_tags,
-                    selected.map(|k| k.tag()).zip(patch.as_ref()),
-                );
+                let patches: Vec<(&str, serde_json::Value)> =
+                    selected.iter().map(|k| (k.tag(), k.patch())).collect();
+                crate::singbox::apply_wireguard(base, &managed_tags, &patches);
             }
             let mut cfg = crate::singbox::convert(
                 &content,

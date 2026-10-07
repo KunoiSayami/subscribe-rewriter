@@ -488,6 +488,9 @@ mod ruleset_config {
         private_key: String,
         #[serde(default)]
         address: Vec<String>,
+        /// Subscriptions this key is served on. Empty means every subscription.
+        #[serde(default)]
+        subs: Vec<String>,
     }
 
     impl WireguardKey {
@@ -496,6 +499,40 @@ mod ruleset_config {
         }
         pub fn tag(&self) -> &str {
             &self.tag
+        }
+        pub fn subs(&self) -> &[String] {
+            &self.subs
+        }
+        pub fn allowed_for(&self, sub_id: &str) -> bool {
+            self.subs.is_empty() || self.subs.iter().any(|s| s == sub_id)
+        }
+        /// Resolve a comma-separated `?wg=` value against `keys` for `sub_id`.
+        ///
+        /// Empty entries, unknown names and keys not allowed for `sub_id` are
+        /// skipped. Returns the conflicting tag as `Err` if two selected keys
+        /// target the same endpoint.
+        pub fn select<'a>(
+            keys: &'a [WireguardKey],
+            names: &str,
+            sub_id: &str,
+        ) -> Result<Vec<&'a WireguardKey>, String> {
+            let mut selected: Vec<&WireguardKey> = Vec::new();
+            for name in names.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                let Some(key) = keys
+                    .iter()
+                    .find(|k| k.name == name && k.allowed_for(sub_id))
+                else {
+                    continue;
+                };
+                if selected.iter().any(|k| k.name == key.name) {
+                    continue;
+                }
+                if selected.iter().any(|k| k.tag == key.tag) {
+                    return Err(key.tag.clone());
+                }
+                selected.push(key);
+            }
+            Ok(selected)
         }
         /// Fields merged into the matching endpoint when this key is selected.
         pub fn patch(&self) -> serde_json::Value {
@@ -771,6 +808,23 @@ mod configure {
                                 r.outbound
                             );
                         }
+                    }
+                }
+            }
+
+            for key in ret.singbox_wireguard() {
+                if key.name().contains(',') {
+                    log::warn!(
+                        "WireGuard key name '{}' contains ',' and cannot be selected via ?wg=",
+                        key.name()
+                    );
+                }
+                for sub in key.subs() {
+                    if !ret.upstream().iter().any(|up| up.sub_id() == sub) {
+                        log::warn!(
+                            "WireGuard key '{}' is bound to unknown sub_id '{sub}'",
+                            key.name()
+                        );
                     }
                 }
             }
@@ -1386,13 +1440,13 @@ pub use proxies::{Proxies, Proxy};
 pub use proxy_groups::{ProxyGroup, ProxyGroups};
 pub use remote_configure::RemoteConfigure;
 pub use rules::Rules;
-pub use ruleset_config::RuleSetRemove;
+pub use ruleset_config::{RuleSetRemove, WireguardKey};
 pub use share_config::{ShareConfig, UpdateConfigureEvent};
 pub use upstream::UpStream;
 
 #[cfg(test)]
 mod tests {
-    use super::Proxy;
+    use super::{Proxy, WireguardKey};
 
     fn make_proxy_value(dialer_proxy: Option<&str>) -> serde_yaml::Value {
         let mut yaml = format!(
@@ -1453,5 +1507,55 @@ mod tests {
         let proxy: Proxy = serde_yaml::from_value(value).unwrap();
         let out = serde_yaml::to_value(&proxy).unwrap();
         assert!(out.get("no-auto-group").is_none());
+    }
+
+    fn wg_keys() -> Vec<WireguardKey> {
+        serde_yaml::from_str(
+            r#"
+- { name: phone, tag: wg-home, private_key: a }
+- { name: phone-office, tag: wg-office, private_key: b }
+- { name: laptop, tag: wg-home, private_key: c }
+- { name: alice-only, tag: wg-lab, private_key: d, subs: [alice] }
+"#,
+        )
+        .unwrap()
+    }
+
+    fn selected_names(keys: &[&WireguardKey]) -> Vec<String> {
+        keys.iter().map(|k| k.name().to_string()).collect()
+    }
+
+    #[test]
+    fn wireguard_select_comma_separated() {
+        let keys = wg_keys();
+        let sel = WireguardKey::select(&keys, "phone, phone-office", "bob").unwrap();
+        assert_eq!(selected_names(&sel), ["phone", "phone-office"]);
+    }
+
+    #[test]
+    fn wireguard_select_skips_empty_unknown_and_duplicate() {
+        let keys = wg_keys();
+        let sel = WireguardKey::select(&keys, ",phone,,typo,phone,", "bob").unwrap();
+        assert_eq!(selected_names(&sel), ["phone"]);
+        assert!(WireguardKey::select(&keys, "", "bob").unwrap().is_empty());
+    }
+
+    #[test]
+    fn wireguard_select_same_tag_conflicts() {
+        let keys = wg_keys();
+        let err = WireguardKey::select(&keys, "phone,laptop", "bob").unwrap_err();
+        assert_eq!(err, "wg-home");
+    }
+
+    #[test]
+    fn wireguard_select_respects_subs() {
+        let keys = wg_keys();
+        assert!(
+            WireguardKey::select(&keys, "alice-only", "bob")
+                .unwrap()
+                .is_empty()
+        );
+        let sel = WireguardKey::select(&keys, "alice-only", "alice").unwrap();
+        assert_eq!(selected_names(&sel), ["alice-only"]);
     }
 }

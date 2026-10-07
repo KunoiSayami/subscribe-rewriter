@@ -42,7 +42,7 @@ clashrw [OPTIONS]
 | `GET /<prefix>/<sub_id>` | Returns the rewritten Clash YAML config. |
 | `GET /<prefix>/<sub_id>?method=raw` | Returns the raw upstream content without rewriting. |
 | `GET /<prefix>/<sub_id>?method=singbox` | Converts the `singbox` upstream (Surge-format) to a sing-box JSON config. Returns `406` if no `singbox` URL is configured for that subscription. |
-| `GET /<prefix>/<sub_id>?method=singbox&wg=<name>` | Same as above, but fills in the WireGuard key pair `<name>` from `singbox.wireguard`. Returns `406` if `<name>` is unknown. |
+| `GET /<prefix>/<sub_id>?method=singbox&wg=<name>[,<name>...]` | Same as above, but fills in the named WireGuard keys from `singbox.wireguard`. Unknown names, and keys not bound to `<sub_id>`, are ignored. Returns `406` if two names target the same endpoint tag. |
 | `GET /rule-set/<tag>` | Fetches the upstream rule-set source JSON for `<tag>`, applies local add/remove patches, compiles it to a binary `.srs` file, and returns it as `application/octet-stream`. Returns `404` if the tag is not configured. |
 | `GET /rule-set/<tag>.srs` | Same as above (explicit `.srs` suffix). |
 | `GET /rule-set/<tag>.json` | Returns the patched rule-set source as pretty-printed JSON instead of compiling to binary. |
@@ -155,13 +155,15 @@ singbox:
   # Defaults to "direct" if unset.
   direct_tag: "DIRECT"
 
-  # Per-device WireGuard keys, selected with ?method=singbox&wg=<name>
+  # Per-device WireGuard keys, selected with ?method=singbox&wg=<name>[,<name>...]
   wireguard:
     - name: phone
       tag: wg-home                      # tag of the wireguard endpoint in the base config
       private_key: "yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk="
       address:                          # optional; overrides the endpoint's address
         - 10.0.0.2/32
+      subs:                             # optional; only served on these sub_ids (default: all)
+        - alice
     - name: laptop
       tag: wg-home
       private_key: "..."
@@ -242,8 +244,9 @@ Each device needs its own WireGuard key pair, and some devices should not get th
 
 Every `wireguard` endpoint whose tag appears in `singbox.wireguard` is *managed*:
 
-- With `?wg=<name>`, the matching endpoint gets that entry's `private_key` and `address`. `address` is required by sing-box, so either the base endpoint or the key entry must provide it.
-- Otherwise, the endpoint is removed and references to its tag are cleaned up:
+- `?wg=` takes a comma-separated list of key names, e.g. `?wg=phone,phone-office`. Each selected key's endpoint gets that entry's `private_key` and `address`. `address` is required by sing-box, so either the base endpoint or the key entry must provide it.
+- Empty entries and unknown names are ignored. A key with `subs` is only served on those `sub_id`s; on any other subscription it is ignored as if unknown, so its private key cannot be fetched by guessing the name. Selecting two keys for the same tag returns `406`.
+- A managed endpoint with no selected key is removed and references to its tag are cleaned up:
   - group `outbounds` lists and a selector's `default` (groups left empty are pruned as usual);
   - `route.rules` whose `outbound` is that tag;
   - `route.final`;
