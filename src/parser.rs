@@ -488,6 +488,9 @@ mod ruleset_config {
         private_key: String,
         #[serde(default)]
         address: Vec<String>,
+        /// Set on every peer of the endpoint when this key is selected.
+        #[serde(default, alias = "pre-shared-key")]
+        pre_shared_key: Option<String>,
         /// Subscriptions this key is served on. Empty means every subscription.
         #[serde(default)]
         subs: Vec<String>,
@@ -539,6 +542,9 @@ mod ruleset_config {
             let mut patch = serde_json::json!({ "private_key": self.private_key });
             if !self.address.is_empty() {
                 patch["address"] = serde_json::json!(self.address);
+            }
+            if let Some(psk) = &self.pre_shared_key {
+                patch["peers"] = serde_json::json!({ "pre_shared_key": psk });
             }
             patch
         }
@@ -1316,12 +1322,13 @@ mod share_config {
 
         pub fn briefing(&self) -> String {
             format!(
-                "Find {} subscriptions (total {} alias), {} rules, {} proxies, {} groups",
+                "Find {} subscriptions (total {} alias), {} rules, {} proxies, {} groups, {} wireguard keys",
                 self.upstream.len(),
                 self.alias_map.len(),
                 self.rules.len(),
                 self.proxies.len(),
                 self.groups.len(),
+                self.singbox_wireguard.len(),
             )
         }
 
@@ -1579,6 +1586,19 @@ keyword: { filter: [], accepted: [] }
         assert_eq!(share.singbox_base_for("alice").unwrap()["per"], "sub");
         assert_eq!(share.singbox_base_for("alice-phone").unwrap()["per"], "sub");
         assert_eq!(share.singbox_base_for("bob").unwrap()["per"], "global");
+    }
+
+    #[test]
+    fn wireguard_patch_includes_pre_shared_key() {
+        let keys: Vec<WireguardKey> = serde_yaml::from_str(
+            r#"
+- { name: a, tag: t, private_key: k, pre_shared_key: psk }
+- { name: b, tag: t, private_key: k }
+"#,
+        )
+        .unwrap();
+        assert_eq!(keys[0].patch()["peers"]["pre_shared_key"], "psk");
+        assert!(keys[1].patch().get("peers").is_none());
     }
 
     #[test]

@@ -666,6 +666,8 @@ pub fn convert(
 /// Every `wireguard` entry in `endpoints` (or legacy `outbounds`) whose tag is in
 /// `managed_tags` is either patched with the matching `selected` fields (keyed by tag)
 /// or removed together with references to it (see [`prune_tag_references`]).
+/// A `peers` object in a patch is merged into every peer of the entry (or into
+/// the entry itself for a legacy single-peer outbound) instead of replacing them.
 /// Unmanaged entries are left untouched. Call this on the base before [`convert`] so that groups left
 /// empty by the removal are pruned there.
 pub fn apply_wireguard(cfg: &mut Value, managed_tags: &[&str], selected: &[(&str, Value)]) {
@@ -685,7 +687,14 @@ pub fn apply_wireguard(cfg: &mut Value, managed_tags: &[&str], selected: &[(&str
             match selected.iter().find(|(t, _)| *t == tag) {
                 Some((_, patch)) => {
                     if let (Some(obj), Some(patch)) = (entry.as_object_mut(), patch.as_object()) {
-                        obj.extend(patch.clone());
+                        for (k, v) in patch {
+                            match (k.as_str(), v.as_object()) {
+                                ("peers", Some(peer_patch)) => merge_peers(obj, peer_patch),
+                                _ => {
+                                    obj.insert(k.clone(), v.clone());
+                                }
+                            }
+                        }
                     }
                     true
                 }
@@ -698,6 +707,20 @@ pub fn apply_wireguard(cfg: &mut Value, managed_tags: &[&str], selected: &[(&str
     }
 
     prune_tag_references(cfg, &removed);
+}
+
+fn merge_peers(
+    entry: &mut serde_json::Map<String, Value>,
+    peer_patch: &serde_json::Map<String, Value>,
+) {
+    match entry.get_mut("peers").and_then(Value::as_array_mut) {
+        Some(peers) => {
+            for peer in peers.iter_mut().filter_map(Value::as_object_mut) {
+                peer.extend(peer_patch.clone());
+            }
+        }
+        None => entry.extend(peer_patch.clone()),
+    }
 }
 
 /// Remove references to `removed` outbound/endpoint tags so sing-box does not
@@ -1248,6 +1271,37 @@ mod tests {
         assert_eq!(eps.len(), 2, "unselected managed endpoint must be removed");
         assert_eq!(find_by_tag(eps, "wg-home")["private_key"], "HOME");
         assert_eq!(find_by_tag(eps, "wg-office")["private_key"], "OFFICE");
+    }
+
+    #[test]
+    fn wireguard_peer_patch_merged_into_every_peer() {
+        let mut base = json!({
+            "endpoints": [{
+                "type": "wireguard", "tag": "wg-home",
+                "peers": [
+                    {"address": "1.2.3.4", "public_key": "A"},
+                    {"address": "5.6.7.8", "public_key": "B", "pre_shared_key": "OLD"},
+                ],
+            }],
+            "outbounds": [
+                {"type": "wireguard", "tag": "wg-legacy", "server": "9.9.9.9"},
+            ],
+        });
+        let patch = json!({"private_key": "PRIV", "peers": {"pre_shared_key": "PSK"}});
+        apply_wireguard(
+            &mut base,
+            &["wg-home", "wg-legacy"],
+            &[("wg-home", patch.clone()), ("wg-legacy", patch)],
+        );
+        let peers = base["endpoints"][0]["peers"].as_array().unwrap();
+        assert_eq!(peers.len(), 2);
+        assert!(peers.iter().all(|p| p["pre_shared_key"] == "PSK"));
+        assert_eq!(peers[1]["public_key"], "B");
+
+        let legacy = &base["outbounds"][0];
+        assert_eq!(legacy["pre_shared_key"], "PSK");
+        assert_eq!(legacy["private_key"], "PRIV");
+        assert!(legacy.get("peers").is_none());
     }
 
     #[test]

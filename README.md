@@ -162,6 +162,7 @@ singbox:
       private_key: "yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk="
       address:                          # optional; overrides the endpoint's address
         - 10.0.0.2/32
+      pre_shared_key: "..."             # optional; set on every peer of the endpoint
       subs:                             # optional; only served on these sub_ids (default: all)
         - alice
     - name: laptop
@@ -244,7 +245,7 @@ Each device needs its own WireGuard key pair, and some devices should not get th
 
 Every `wireguard` endpoint whose tag appears in `singbox.wireguard` is *managed*:
 
-- `?wg=` takes a comma-separated list of key names, e.g. `?wg=phone,phone-office`. Each selected key's endpoint gets that entry's `private_key` and `address`. `address` is required by sing-box, so either the base endpoint or the key entry must provide it.
+- `?wg=` takes a comma-separated list of key names, e.g. `?wg=phone,phone-office`. Each selected key's endpoint gets that entry's `private_key` and `address`. `address` is required by sing-box, so either the base endpoint or the key entry must provide it. If the entry sets `pre_shared_key`, it is written to every peer in the endpoint's `peers`, overriding any value in the base config (for a legacy single-peer `outbounds` entry, to the entry itself). Generate one with `sing-box generate rand --base64 32` and set the same value as the peer's Preshared Key on the server.
 - Empty entries and unknown names are ignored. A key with `subs` is only served on those `sub_id`s; on any other subscription it is ignored as if unknown, so its private key cannot be fetched by guessing the name. `subs` is matched exactly against the `sub_id` in the request URL, so an alias must be listed explicitly: `subs: [alice]` does not match a request to `alice`'s alias `alice-phone`, and vice versa. Listing only an alias binds the key to that one URL. Selecting two keys for the same tag returns `406`.
 - A managed endpoint with no selected key is removed and references to its tag are cleaned up:
   - group `outbounds` lists and a selector's `default` (groups left empty are pruned as usual);
@@ -254,7 +255,7 @@ Every `wireguard` endpoint whose tag appears in `singbox.wireguard` is *managed*
 
 Unmanaged endpoints are left as-is. Legacy `wireguard` entries in `outbounds` are handled the same way, but sing-box removed that form in 1.13.0, so this only matters for 1.11 and 1.12 clients. `detour` references (on outbounds, endpoints, DNS servers, rule-set `download_detour`, etc.) are **not** rewritten. Don't point them at a managed WireGuard tag, or sing-box will fail to start when `wg` is omitted.
 
-The private key lives only in `config.yaml`; the URL carries just the device name.
+The private and pre-shared keys live only in `config.yaml`; the URL carries just the device name.
 
 ### sing-box Rule-Set Serving
 
