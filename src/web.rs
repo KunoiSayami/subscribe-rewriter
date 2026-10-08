@@ -18,6 +18,7 @@ pub mod v2 {
         method: Option<String>,
         log: Option<String>,
         wg: Option<String>,
+        tun: Option<String>,
     }
 
     #[derive(Clone)]
@@ -66,6 +67,7 @@ pub mod v2 {
         method: &str,
         log_level: Option<String>,
         wg: Option<String>,
+        tun: Option<String>,
         share_config: Arc<RwLock<ShareConfig>>,
     ) -> Result<Response<String>, ErrorCode> {
         let share_config = share_config.read().await;
@@ -131,6 +133,14 @@ pub mod v2 {
                 share_config.manual_insert_proxies(),
                 share_config.singbox_direct_tag(),
             );
+            if tun.is_some_and(|v| {
+                matches!(
+                    v.to_ascii_lowercase().as_str(),
+                    "0" | "false" | "no" | "off"
+                )
+            }) {
+                crate::singbox::remove_tun(&mut cfg);
+            }
             if let Some(level) = log_level {
                 let level = match level.to_ascii_lowercase().as_str() {
                     v @ ("trace" | "debug" | "info" | "warn" | "error" | "fatal" | "panic") => {
@@ -299,6 +309,7 @@ pub mod v2 {
             &params.method.clone().unwrap_or_default(),
             params.log.clone(),
             params.wg.clone(),
+            params.tun.clone(),
             share_configure,
         )
         .await

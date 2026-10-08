@@ -659,6 +659,40 @@ pub fn convert(
     cfg
 }
 
+// ── TUN inbound removal ──────────────────────────────────────────────────────
+
+/// Remove every `tun` inbound and strip its tag from the `inbound` match of
+/// `route.rules` and `dns.rules` (see [`prune_rule_match`]).
+pub fn remove_tun(cfg: &mut Value) {
+    let mut removed: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    if let Some(arr) = cfg.get_mut("inbounds").and_then(Value::as_array_mut) {
+        arr.retain(|entry| {
+            if type_of(entry) != Some("tun") {
+                return true;
+            }
+            if let Some(tag) = tag_of(entry) {
+                removed.insert(tag.to_string());
+            }
+            false
+        });
+    }
+
+    if removed.is_empty() {
+        return;
+    }
+
+    for section in ["route", "dns"] {
+        if let Some(rules) = cfg
+            .get_mut(section)
+            .and_then(|s| s.get_mut("rules"))
+            .and_then(Value::as_array_mut)
+        {
+            rules.retain_mut(|r| prune_rule_match(r, &["inbound"], &removed));
+        }
+    }
+}
+
 // ── WireGuard per-device keys ────────────────────────────────────────────────
 
 /// Resolve WireGuard endpoints in a base config against per-device keys.
@@ -1382,5 +1416,35 @@ mod tests {
             .unwrap();
         assert!(config_outs.contains(&json!("Config Node")));
         assert!(!config_outs.contains(&json!("Remote Node")));
+    }
+
+    #[test]
+    fn remove_tun_strips_inbound_and_rule_matches() {
+        let mut cfg = json!({
+            "inbounds": [
+                {"type": "tun", "tag": "tun-in"},
+                {"type": "mixed", "tag": "mixed-in"},
+            ],
+            "route": {
+                "rules": [
+                    {"inbound": "tun-in", "action": "sniff"},
+                    {"inbound": ["tun-in", "mixed-in"], "outbound": "proxy"},
+                    {"domain": ["example.com"], "outbound": "direct"},
+                ],
+            },
+            "dns": {
+                "rules": [{"inbound": ["tun-in"], "server": "remote"}],
+            },
+        });
+        remove_tun(&mut cfg);
+        assert_eq!(
+            cfg["inbounds"],
+            json!([{"type": "mixed", "tag": "mixed-in"}])
+        );
+        let rules = cfg["route"]["rules"].as_array().unwrap();
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0]["inbound"], json!(["mixed-in"]));
+        assert_eq!(rules[1]["domain"][0], "example.com");
+        assert!(cfg["dns"]["rules"].as_array().unwrap().is_empty());
     }
 }
