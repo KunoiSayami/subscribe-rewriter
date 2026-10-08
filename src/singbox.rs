@@ -663,20 +663,17 @@ pub fn convert(
 
 /// Resolve WireGuard endpoints in a base config against per-device keys.
 ///
-/// Every `wireguard` entry in `endpoints` (or legacy `outbounds`) whose tag is in
-/// `managed_tags` is either patched with the matching `selected` fields (keyed by tag)
-/// or removed together with references to it (see [`prune_tag_references`]).
-/// A `peers` object in a patch is merged into every peer of the entry (or into
-/// the entry itself for a legacy single-peer outbound) instead of replacing them.
-/// Unmanaged entries are left untouched. Call this on the base before [`convert`] so that groups left
+/// Every `wireguard` entry in `endpoints` whose tag is in `managed_tags` is either
+/// patched with the matching `selected` fields (keyed by tag) or removed together
+/// with references to it (see [`prune_tag_references`]).
+/// A `peers` object in a patch is merged into every peer of the entry instead of
+/// replacing them. Unmanaged entries, and legacy `wireguard` outbounds (removed in
+/// sing-box 1.13.0), are left untouched. Call this on the base before [`convert`] so that groups left
 /// empty by the removal are pruned there.
 pub fn apply_wireguard(cfg: &mut Value, managed_tags: &[&str], selected: &[(&str, Value)]) {
     let mut removed: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for key in ["endpoints", "outbounds"] {
-        let Some(arr) = cfg.get_mut(key).and_then(Value::as_array_mut) else {
-            continue;
-        };
+    if let Some(arr) = cfg.get_mut("endpoints").and_then(Value::as_array_mut) {
         arr.retain_mut(|entry| {
             if type_of(entry) != Some("wireguard") {
                 return true;
@@ -713,13 +710,11 @@ fn merge_peers(
     entry: &mut serde_json::Map<String, Value>,
     peer_patch: &serde_json::Map<String, Value>,
 ) {
-    match entry.get_mut("peers").and_then(Value::as_array_mut) {
-        Some(peers) => {
-            for peer in peers.iter_mut().filter_map(Value::as_object_mut) {
-                peer.extend(peer_patch.clone());
-            }
-        }
-        None => entry.extend(peer_patch.clone()),
+    let Some(peers) = entry.get_mut("peers").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for peer in peers.iter_mut().filter_map(Value::as_object_mut) {
+        peer.extend(peer_patch.clone());
     }
 }
 
@@ -1274,7 +1269,7 @@ mod tests {
     }
 
     #[test]
-    fn wireguard_peer_patch_merged_into_every_peer() {
+    fn wireguard_peer_patch_merged_into_every_endpoint_peer() {
         let mut base = json!({
             "endpoints": [{
                 "type": "wireguard", "tag": "wg-home",
@@ -1298,10 +1293,60 @@ mod tests {
         assert!(peers.iter().all(|p| p["pre_shared_key"] == "PSK"));
         assert_eq!(peers[1]["public_key"], "B");
 
-        let legacy = &base["outbounds"][0];
-        assert_eq!(legacy["pre_shared_key"], "PSK");
-        assert_eq!(legacy["private_key"], "PRIV");
-        assert!(legacy.get("peers").is_none());
+        assert_eq!(
+            base["outbounds"][0],
+            json!({"type": "wireguard", "tag": "wg-legacy", "server": "9.9.9.9"}),
+            "legacy wireguard outbound must be left untouched"
+        );
+    }
+
+    #[test]
+    fn wireguard_logical_rule_hides_nested_fields_when_unselected() {
+        let base = json!({
+            "endpoints": [{"type": "wireguard", "tag": "wg-home", "peers": [{}]}],
+            "route": {
+                "rules": [
+                    {
+                        "type": "logical", "mode": "and", "outbound": "wg-home",
+                        "rules": [
+                            {"ip_cidr": ["192.168.7.0/24"]},
+                            {"wifi_ssid": ["SecretSSID"], "invert": true},
+                        ],
+                    },
+                    {"ip_is_private": true, "outbound": "direct"},
+                ],
+            },
+        });
+
+        let mut unselected = base.clone();
+        apply_wireguard(&mut unselected, &["wg-home"], &[]);
+        assert!(
+            !unselected.to_string().contains("SecretSSID"),
+            "SSID must not leak without wg"
+        );
+        assert_eq!(unselected["route"]["rules"].as_array().unwrap().len(), 1);
+
+        let mut selected = base;
+        apply_wireguard(
+            &mut selected,
+            &["wg-home"],
+            &[("wg-home", json!({"private_key": "K"}))],
+        );
+        assert!(selected.to_string().contains("SecretSSID"));
+    }
+
+    #[test]
+    fn wireguard_legacy_outbound_not_removed_when_unselected() {
+        let mut base = json!({
+            "outbounds": [
+                {"type": "wireguard", "tag": "wg-legacy"},
+                {"type": "selector", "tag": "main", "outbounds": ["wg-legacy", "direct"]},
+                {"type": "direct", "tag": "direct"},
+            ],
+        });
+        let before = base.clone();
+        apply_wireguard(&mut base, &["wg-legacy"], &[]);
+        assert_eq!(base, before);
     }
 
     #[test]
