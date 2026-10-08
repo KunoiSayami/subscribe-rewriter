@@ -66,7 +66,7 @@ upstream:
     upstream: "https://example.com/clash-sub"
     raw: "https://example.com/raw-sub"        # optional, used with ?method=raw; may be a local file path
     singbox: "https://example.com/surge-sub"  # optional, used with ?method=singbox (Surge-format); may be a local file path
-    singbox_config_path: "/etc/sub/custom-singbox-base.json"  # optional, per-subscription sing-box base config
+    singbox_config_path: "/etc/sub/custom-singbox-base.json"  # optional, per-subscription sing-box base config (also used by its aliases)
     passthrough: false                         # optional; if true, content is returned as-is without rewriting
     override:                                  # optional
       expire: 1711451400

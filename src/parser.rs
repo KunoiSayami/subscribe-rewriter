@@ -1265,7 +1265,10 @@ mod share_config {
             self.singbox_base.as_ref()
         }
 
+        /// Per-sub base config for `sub_id` (an alias is resolved to its sub),
+        /// falling back to the global base.
         pub fn singbox_base_for(&self, sub_id: &str) -> Option<&serde_json::Value> {
+            let sub_id = self.alias_map.get(sub_id).map_or(sub_id, String::as_str);
             self.singbox_bases
                 .get(sub_id)
                 .or_else(|| self.singbox_base.as_ref())
@@ -1549,6 +1552,33 @@ mod tests {
         let keys = wg_keys();
         let err = WireguardKey::select(&keys, "phone,laptop", "bob").unwrap_err();
         assert_eq!(err, "wg-home");
+    }
+
+    #[test]
+    fn singbox_base_for_resolves_alias() {
+        let cfg: super::Configure = serde_yaml::from_str(
+            r#"
+upstream:
+  - { sub_id: alice, upstream: "http://a", alias: [alice-phone] }
+rules: []
+proxies: []
+keyword: { filter: [], accepted: [] }
+"#,
+        )
+        .unwrap();
+        let bases = std::collections::HashMap::from([(
+            "alice".to_string(),
+            serde_json::json!({"per": "sub"}),
+        )]);
+        let share = super::ShareConfig::new(
+            cfg,
+            Some(serde_json::json!({"per": "global"})),
+            bases,
+            redis::Client::open("redis://127.0.0.1").unwrap(),
+        );
+        assert_eq!(share.singbox_base_for("alice").unwrap()["per"], "sub");
+        assert_eq!(share.singbox_base_for("alice-phone").unwrap()["per"], "sub");
+        assert_eq!(share.singbox_base_for("bob").unwrap()["per"], "global");
     }
 
     #[test]
