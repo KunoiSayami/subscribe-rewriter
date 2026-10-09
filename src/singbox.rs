@@ -693,6 +693,17 @@ pub fn remove_tun(cfg: &mut Value) {
     }
 }
 
+// ── Mixed inbound port ───────────────────────────────────────────────────────
+
+/// Set `listen_port` on every `mixed` inbound.
+pub fn set_mixed_port(cfg: &mut Value, port: u16) {
+    if let Some(arr) = cfg.get_mut("inbounds").and_then(Value::as_array_mut) {
+        for entry in arr.iter_mut().filter(|e| type_of(e) == Some("mixed")) {
+            entry["listen_port"] = json!(port);
+        }
+    }
+}
+
 // ── WireGuard per-device keys ────────────────────────────────────────────────
 
 /// Resolve WireGuard endpoints in a base config against per-device keys.
@@ -1446,5 +1457,18 @@ mod tests {
         assert_eq!(rules[0]["inbound"], json!(["mixed-in"]));
         assert_eq!(rules[1]["domain"][0], "example.com");
         assert!(cfg["dns"]["rules"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn set_mixed_port_only_touches_mixed_inbounds() {
+        let mut cfg = json!({
+            "inbounds": [
+                {"type": "tun", "tag": "tun-in"},
+                {"type": "mixed", "listen": "127.0.0.1", "listen_port": 7890},
+            ],
+        });
+        set_mixed_port(&mut cfg, 1080);
+        assert_eq!(cfg["inbounds"][0], json!({"type": "tun", "tag": "tun-in"}));
+        assert_eq!(cfg["inbounds"][1]["listen_port"], 1080);
     }
 }

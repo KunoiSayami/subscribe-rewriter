@@ -44,6 +44,7 @@ clashrw [OPTIONS]
 | `GET /<prefix>/<sub_id>?method=singbox` | Converts the `singbox` upstream (Surge-format) to a sing-box JSON config. Returns `406` if no `singbox` URL is configured for that subscription. |
 | `GET /<prefix>/<sub_id>?method=singbox&wg=<name>[,<name>...]` | Same as above, but fills in the named WireGuard keys from `singbox.wireguard`. Unknown names, and keys not bound to `<sub_id>`, are ignored. Returns `406` if two names target the same endpoint tag. |
 | `GET /<prefix>/<sub_id>?method=singbox&tun=false` | Same as `?method=singbox`, but removes every `tun` inbound and strips its tag from the `inbound` match of `route.rules` and `dns.rules`. A rule whose `inbound` list ends up empty is dropped. Accepts `false`, `0`, `no` or `off`; can be combined with `wg`. |
+| `GET /<prefix>/<sub_id>?method=singbox&port=<n>` | Same as `?method=singbox`, but sets `listen_port` of every `mixed` inbound to `<n>` (1–65535). Invalid values are ignored; can be combined with `wg` and `tun`. |
 | `GET /rule-set/<tag>` | Fetches the upstream rule-set source JSON for `<tag>`, applies local add/remove patches, compiles it to a binary `.srs` file, and returns it as `application/octet-stream`. Returns `404` if the tag is not configured. |
 | `GET /rule-set/<tag>.srs` | Same as above (explicit `.srs` suffix). |
 | `GET /rule-set/<tag>.json` | Returns the patched rule-set source as pretty-printed JSON instead of compiling to binary. |

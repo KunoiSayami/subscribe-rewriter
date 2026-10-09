@@ -19,6 +19,7 @@ pub mod v2 {
         log: Option<String>,
         wg: Option<String>,
         tun: Option<String>,
+        port: Option<String>,
     }
 
     #[derive(Clone)]
@@ -68,6 +69,7 @@ pub mod v2 {
         log_level: Option<String>,
         wg: Option<String>,
         tun: Option<String>,
+        port: Option<String>,
         share_config: Arc<RwLock<ShareConfig>>,
     ) -> Result<Response<String>, ErrorCode> {
         let share_config = share_config.read().await;
@@ -140,6 +142,9 @@ pub mod v2 {
                 )
             }) {
                 crate::singbox::remove_tun(&mut cfg);
+            }
+            if let Some(port) = port.and_then(|v| v.parse::<u16>().ok()).filter(|p| *p != 0) {
+                crate::singbox::set_mixed_port(&mut cfg, port);
             }
             if let Some(level) = log_level {
                 let level = match level.to_ascii_lowercase().as_str() {
@@ -310,6 +315,7 @@ pub mod v2 {
             params.log.clone(),
             params.wg.clone(),
             params.tun.clone(),
+            params.port.clone(),
             share_configure,
         )
         .await
