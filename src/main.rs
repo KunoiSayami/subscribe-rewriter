@@ -462,6 +462,7 @@ mod suggest {
     fn non_url_identical(a: &UpStream, b: &UpStream) -> bool {
         format!("{:?}", a.sub_override()) == format!("{:?}", b.sub_override())
             && a.passthrough() == b.passthrough()
+            && a.level() == b.level()
     }
 
     /// Analyse upstreams, print findings, and return the list of actions to
@@ -564,6 +565,8 @@ mod suggest {
     ///
     /// For `UseInherit`: adds `inherit: <parent>` to the child entry and
     /// removes URL fields on the child that are identical to the parent's.
+    /// A child without `level` gets an explicit `level: 0` when the parent sets
+    /// one, so inheriting never raises the child's level.
     pub fn apply_actions(
         mut raw: serde_yaml::Value,
         actions: &[Action],
@@ -629,6 +632,11 @@ mod suggest {
                                 .collect()
                         })
                         .unwrap_or_default();
+                    let level_key = serde_yaml::Value::String("level".into());
+                    let parent_has_level = seq
+                        .iter()
+                        .find(|e| e.get("sub_id").and_then(|v| v.as_str()) == Some(parent.as_str()))
+                        .is_some_and(|e| e.get(&level_key).is_some());
 
                     if let Some(entry) = seq
                         .iter_mut()
@@ -648,6 +656,9 @@ mod suggest {
                                 if child_val.as_ref() == parent_val {
                                     map.remove(&key);
                                 }
+                            }
+                            if parent_has_level && !map.contains_key(&level_key) {
+                                map.insert(level_key, serde_yaml::Value::Number(0.into()));
                             }
                         }
                     }
@@ -696,6 +707,9 @@ mod suggest {
         }
         if a.passthrough() != b.passthrough() {
             println!("  passthrough: {} vs {}", a.passthrough(), b.passthrough());
+        }
+        if a.level() != b.level() {
+            println!("  level: {} vs {}", a.level(), b.level());
         }
     }
 }

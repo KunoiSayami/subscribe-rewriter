@@ -704,6 +704,41 @@ pub fn set_mixed_port(cfg: &mut Value, port: u16) {
     }
 }
 
+// ── Client level ─────────────────────────────────────────────────────────────
+
+/// Remove every entry in `outbounds` and `endpoints` whose `level` is higher
+/// than `client_level`, together with references to it (see
+/// [`prune_tag_references`]). A `level` that is not a non-negative integer
+/// hides the entry from every client. The `level` field is stripped from the
+/// remaining entries. Call this on the base before [`convert`] so that groups
+/// left empty by the removal are pruned there.
+pub fn apply_level(cfg: &mut Value, client_level: u32) {
+    let mut removed: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for section in ["outbounds", "endpoints"] {
+        let Some(arr) = cfg.get_mut(section).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        arr.retain_mut(|entry| {
+            let Some(obj) = entry.as_object_mut() else {
+                return true;
+            };
+            let Some(level) = obj.remove("level") else {
+                return true;
+            };
+            if level.as_u64().is_some_and(|l| l <= u64::from(client_level)) {
+                return true;
+            }
+            if let Some(tag) = obj.get("tag").and_then(Value::as_str) {
+                removed.insert(tag.to_string());
+            }
+            false
+        });
+    }
+
+    prune_tag_references(cfg, &removed);
+}
+
 // ── WireGuard per-device keys ────────────────────────────────────────────────
 
 /// Resolve WireGuard endpoints in a base config against per-device keys.
@@ -1457,6 +1492,75 @@ mod tests {
         assert_eq!(rules[0]["inbound"], json!(["mixed-in"]));
         assert_eq!(rules[1]["domain"][0], "example.com");
         assert!(cfg["dns"]["rules"].as_array().unwrap().is_empty());
+    }
+
+    fn level_base() -> Value {
+        json!({
+            "endpoints": [
+                {"type": "wireguard", "tag": "wg-home", "level": 2},
+            ],
+            "outbounds": [
+                {"type": "selector", "tag": "main", "default": "home", "outbounds": ["home", "direct"]},
+                {"type": "selector", "tag": "home", "level": 1, "outbounds": ["wg-home", "direct"]},
+                {"type": "selector", "tag": "wg-only", "outbounds": ["wg-home"]},
+                {"type": "direct", "tag": "direct", "level": 0},
+                {"type": "block", "tag": "bad", "level": "high"},
+            ],
+            "route": {
+                "rules": [
+                    {"ip_cidr": ["192.168.1.0/24"], "outbound": "home"},
+                    {"domain": ["example.com"], "outbound": "direct"},
+                ],
+                "final": "home",
+            },
+            "dns": {
+                "rules": [{"outbound": ["home"], "server": "local"}],
+            },
+        })
+    }
+
+    #[test]
+    fn level_hides_outbounds_above_client_level() {
+        let mut base = level_base();
+        apply_level(&mut base, 0);
+        assert!(base["endpoints"].as_array().unwrap().is_empty());
+        assert!(base.get("level").is_none());
+        assert!(!base.to_string().contains("\"level\""));
+        assert!(!base.to_string().contains("192.168.1.0/24"));
+        assert!(base["route"].get("final").is_none());
+        assert!(base["dns"]["rules"].as_array().unwrap().is_empty());
+
+        let cfg = convert("", Some(&base), &[], &[], &[], "direct");
+        let obs = cfg["outbounds"].as_array().unwrap();
+        let tags: Vec<&str> = obs.iter().filter_map(tag_of).collect();
+        assert!(!tags.contains(&"home"));
+        assert!(!tags.contains(&"bad"), "invalid level hides from everyone");
+        assert!(!tags.contains(&"wg-only"), "group left empty is pruned");
+        let main = find_by_tag(obs, "main");
+        assert!(main.get("default").is_none());
+        assert_eq!(main["outbounds"], json!(["direct"]));
+    }
+
+    #[test]
+    fn level_partial_keeps_lower_levels() {
+        let mut base = level_base();
+        apply_level(&mut base, 1);
+        assert!(base["endpoints"].as_array().unwrap().is_empty());
+        let obs = base["outbounds"].as_array().unwrap();
+        let home = find_by_tag(obs, "home");
+        assert!(home.get("level").is_none());
+        assert_eq!(home["outbounds"], json!(["direct"]));
+        assert_eq!(base["route"]["final"], "home");
+    }
+
+    #[test]
+    fn level_high_enough_keeps_everything() {
+        let mut base = level_base();
+        apply_level(&mut base, 2);
+        assert_eq!(base["endpoints"].as_array().unwrap().len(), 1);
+        assert_eq!(base["outbounds"].as_array().unwrap().len(), 4);
+        assert_eq!(base["route"]["rules"].as_array().unwrap().len(), 2);
+        assert!(!base.to_string().contains("\"level\""));
     }
 
     #[test]

@@ -574,6 +574,10 @@ mod upstream {
         alias: Vec<String>,
         #[serde(default)]
         passthrough: Option<bool>,
+        /// Client level. sing-box outbounds and endpoints whose `level` is higher
+        /// are removed from this subscription's config.
+        #[serde(default)]
+        level: Option<u32>,
     }
 
     impl UpStream {
@@ -614,6 +618,10 @@ mod upstream {
             self.passthrough.unwrap_or(false)
         }
 
+        pub fn level(&self) -> u32 {
+            self.level.unwrap_or(0)
+        }
+
         pub fn has_upstream(&self) -> bool {
             self.upstream.is_some()
         }
@@ -639,6 +647,9 @@ mod upstream {
             }
             if self.passthrough.is_none() {
                 self.passthrough = parent.passthrough;
+            }
+            if self.level.is_none() {
+                self.level = parent.level;
             }
         }
     }
@@ -1104,6 +1115,7 @@ mod share_config {
         singbox: Option<String>,
         sub_override: Option<OverridableValue>,
         passthrough: bool,
+        level: u32,
     }
 
     impl UrlConfig {
@@ -1122,6 +1134,7 @@ mod share_config {
             singbox: Option<String>,
             sub_override: Option<OverridableValue>,
             passthrough: bool,
+            level: u32,
         ) -> Self {
             Self {
                 upstream,
@@ -1129,6 +1142,7 @@ mod share_config {
                 singbox,
                 sub_override,
                 passthrough,
+                level,
             }
         }
         pub fn sub_override(&self) -> Option<OverridableValue> {
@@ -1136,6 +1150,9 @@ mod share_config {
         }
         pub fn passthrough(&self) -> bool {
             self.passthrough
+        }
+        pub fn level(&self) -> u32 {
+            self.level
         }
     }
 
@@ -1147,6 +1164,7 @@ mod share_config {
                 value.singbox().cloned(),
                 value.sub_override(),
                 value.passthrough(),
+                value.level(),
             )
         }
     }
@@ -1586,6 +1604,30 @@ keyword: { filter: [], accepted: [] }
         assert_eq!(share.singbox_base_for("alice").unwrap()["per"], "sub");
         assert_eq!(share.singbox_base_for("alice-phone").unwrap()["per"], "sub");
         assert_eq!(share.singbox_base_for("bob").unwrap()["per"], "global");
+    }
+
+    #[test]
+    fn level_resolves_alias_and_defaults_to_zero() {
+        let cfg: super::Configure = serde_yaml::from_str(
+            r#"
+upstream:
+  - { sub_id: alice, upstream: "http://a", alias: [alice-phone], level: 2 }
+  - { sub_id: bob, upstream: "http://b" }
+rules: []
+proxies: []
+keyword: { filter: [], accepted: [] }
+"#,
+        )
+        .unwrap();
+        let share = super::ShareConfig::new(
+            cfg,
+            None,
+            Default::default(),
+            redis::Client::open("redis://127.0.0.1").unwrap(),
+        );
+        assert_eq!(share.search_url("alice").unwrap().level(), 2);
+        assert_eq!(share.search_url("alice-phone").unwrap().level(), 2);
+        assert_eq!(share.search_url("bob").unwrap().level(), 0);
     }
 
     #[test]

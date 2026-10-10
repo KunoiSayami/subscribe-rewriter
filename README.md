@@ -17,6 +17,7 @@ A proxy subscription rewriting service for Clash and sing-box. It fetches remote
 - **Raw passthrough** — Supports a `?method=raw` query parameter to return the upstream content unmodified (useful for non-Clash clients like Quantumult X).
 - **Per-subscription passthrough** — Set `passthrough: true` on an upstream entry to always return its content as-is, without any rewriting, regardless of the query method.
 - **Local file serving** — The `upstream`, `raw`, and `singbox` fields accept local filesystem paths. If the path exists as a file, it is read directly instead of fetched over HTTP.
+- **Client levels** — Give each subscription a `level`; sing-box outbounds and endpoints marked with a higher `level` in the base config are removed from that subscription's config. See [Client Levels](#client-levels).
 - **Subscription-userinfo forwarding** — Preserves and optionally overrides the `subscription-userinfo` header from upstream.
 
 ## Usage
@@ -70,6 +71,7 @@ upstream:
     singbox: "https://example.com/surge-sub"  # optional, used with ?method=singbox (Surge-format); may be a local file path
     singbox_config_path: "/etc/sub/custom-singbox-base.json"  # optional, per-subscription sing-box base config (also used by its aliases)
     passthrough: false                         # optional; if true, content is returned as-is without rewriting
+    level: 0                                   # optional, client level for sing-box output (default 0); see "Client Levels"
     override:                                  # optional
       expire: 1711451400
       total: 114514191981
@@ -258,6 +260,41 @@ Every `wireguard` endpoint whose tag appears in `singbox.wireguard` is *managed*
 Unmanaged endpoints are left as-is. Only the `endpoints` form (sing-box 1.11+) is managed: legacy `wireguard` entries in `outbounds`, which sing-box removed in 1.13.0, are never patched or removed, even if their tag is listed in `singbox.wireguard`. `detour` references (on outbounds, endpoints, DNS servers, rule-set `download_detour`, etc.) are **not** rewritten. Don't point them at a managed WireGuard tag, or sing-box will fail to start when `wg` is omitted.
 
 The private and pre-shared keys live only in `config.yaml`; the URL carries just the device name.
+
+### Client Levels
+
+Some outbounds should only reach some clients, for example a home-network selector that only family devices get. Give each subscription a `level` in `config.yaml`, and mark the restricted outbounds or endpoints in the sing-box base config with a `level` field:
+
+```yaml
+upstream:
+  - sub_id: family
+    upstream: "https://example.com/sub"
+    singbox: "https://example.com/surge-sub"
+    level: 2
+  - sub_id: guest
+    inherit: family
+    level: 0                            # must be set, otherwise `level: 2` is inherited
+```
+
+```json
+"endpoints": [
+  { "type": "wireguard", "tag": "wg-home", "level": 2, "peers": [ ... ] }
+],
+"outbounds": [
+  { "type": "selector", "tag": "🏠 Home", "level": 1, "outbounds": ["wg-home", "direct"] },
+  { "type": "direct", "tag": "direct" }
+]
+```
+
+On every `?method=singbox` request:
+
+- An entry in `outbounds` or `endpoints` is kept if it has no `level`, or if its `level` is lower than or equal to the subscription's level. A `level` that is not a non-negative integer hides the entry from every client.
+- `level` is stripped from every kept entry, so sing-box never sees it.
+- Removed entries are cleaned up the same way as unselected [WireGuard endpoints](#wireguard-key-pairs): group `outbounds` lists, selector `default`, `route.rules`, `route.final` and the `outbound`/`preferred_by` matches in `dns.rules`. Groups left empty are pruned, and a rule whose list match ends up empty is dropped entirely, so nothing that only a hidden outbound uses (IP ranges, SSIDs, …) leaks.
+
+A subscription without `level` has level `0`, and its aliases share its level. `level` is inherited through `inherit` like the other fields, so a child meant to see less must set its own `level` explicitly. The level is set only in `config.yaml`, never in the URL, so a client cannot raise it. `detour` references are **not** rewritten. Don't point a visible outbound's `detour` at a hidden tag, or sing-box will fail to start on lower-level clients.
+
+Levels only apply to sing-box output. Clash output is unaffected.
 
 ### sing-box Rule-Set Serving
 
