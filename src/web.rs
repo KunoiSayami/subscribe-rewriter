@@ -20,6 +20,8 @@ pub mod v2 {
         wg: Option<String>,
         tun: Option<String>,
         port: Option<String>,
+        #[serde(rename = "no-label")]
+        no_label: Option<String>,
     }
 
     #[derive(Clone)]
@@ -70,6 +72,7 @@ pub mod v2 {
         wg: Option<String>,
         tun: Option<String>,
         port: Option<String>,
+        no_label: Option<String>,
         share_config: Arc<RwLock<ShareConfig>>,
     ) -> Result<Response<String>, ErrorCode> {
         let share_config = share_config.read().await;
@@ -121,8 +124,20 @@ pub mod v2 {
                     },
                 )?;
             let mut base = share_config.singbox_base_for(&sub_id).cloned();
+            let used_rule_sets = base
+                .as_ref()
+                .map(crate::singbox::rule_set_references)
+                .unwrap_or_default();
             if let Some(base) = base.as_mut() {
                 crate::singbox::apply_level(base, mapper.level());
+                let labels: std::collections::HashSet<&str> = no_label
+                    .as_deref()
+                    .unwrap_or_default()
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                crate::singbox::remove_labeled_rules(base, &labels);
                 let managed_tags: Vec<&str> = wg_keys.iter().map(|k| k.tag()).collect();
                 let patches: Vec<(&str, serde_json::Value)> =
                     selected.iter().map(|k| (k.tag(), k.patch())).collect();
@@ -144,6 +159,7 @@ pub mod v2 {
             }) {
                 crate::singbox::remove_tun(&mut cfg);
             }
+            crate::singbox::prune_unused_rule_sets(&mut cfg, &used_rule_sets);
             if let Some(port) = port.and_then(|v| v.parse::<u16>().ok()).filter(|p| *p != 0) {
                 crate::singbox::set_mixed_port(&mut cfg, port);
             }
@@ -317,6 +333,7 @@ pub mod v2 {
             params.wg.clone(),
             params.tun.clone(),
             params.port.clone(),
+            params.no_label.clone(),
             share_configure,
         )
         .await

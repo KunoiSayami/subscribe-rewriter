@@ -18,6 +18,7 @@ A proxy subscription rewriting service for Clash and sing-box. It fetches remote
 - **Per-subscription passthrough** — Set `passthrough: true` on an upstream entry to always return its content as-is, without any rewriting, regardless of the query method.
 - **Local file serving** — The `upstream`, `raw`, and `singbox` fields accept local filesystem paths. If the path exists as a file, it is read directly instead of fetched over HTTP.
 - **Client levels** — Give each subscription a `level`; sing-box outbounds and endpoints marked with a higher `level` in the base config are removed from that subscription's config. See [Client Levels](#client-levels).
+- **Rule labels** — Tag sing-box `route.rules` and `dns.rules` in the base config with a `label`, and drop them per request with `?no-label=<label>[,<label>...]`. See [Rule Labels](#rule-labels).
 - **Subscription-userinfo forwarding** — Preserves and optionally overrides the `subscription-userinfo` header from upstream.
 
 ## Usage
@@ -46,6 +47,7 @@ clashrw [OPTIONS]
 | `GET /<prefix>/<sub_id>?method=singbox&wg=<name>[,<name>...]` | Same as above, but fills in the named WireGuard keys from `singbox.wireguard`. Unknown names, and keys not bound to `<sub_id>`, are ignored. Returns `406` if two names target the same endpoint tag. |
 | `GET /<prefix>/<sub_id>?method=singbox&tun=false` | Same as `?method=singbox`, but removes every `tun` inbound and strips its tag from the `inbound` match of `route.rules` and `dns.rules`. A rule whose `inbound` list ends up empty is dropped. Accepts `false`, `0`, `no` or `off`; can be combined with `wg`. |
 | `GET /<prefix>/<sub_id>?method=singbox&port=<n>` | Same as `?method=singbox`, but sets `listen_port` of every `mixed` inbound to `<n>` (1–65535). Invalid values are ignored; can be combined with `wg` and `tun`. |
+| `GET /<prefix>/<sub_id>?method=singbox&no-label=<label>[,<label>...]` | Same as `?method=singbox`, but removes every rule in the base config's `route.rules` and `dns.rules` labeled with one of the given labels. See [Rule Labels](#rule-labels). Can be combined with `wg`, `tun` and `port`. |
 | `GET /rule-set/<tag>` | Fetches the upstream rule-set source JSON for `<tag>`, applies local add/remove patches, compiles it to a binary `.srs` file, and returns it as `application/octet-stream`. Returns `404` if the tag is not configured. |
 | `GET /rule-set/<tag>.srs` | Same as above (explicit `.srs` suffix). |
 | `GET /rule-set/<tag>.json` | Returns the patched rule-set source as pretty-printed JSON instead of compiling to binary. |
@@ -295,6 +297,42 @@ On every `?method=singbox` request:
 A subscription without `level` has level `0`, and its aliases share its level. `level` is inherited through `inherit` like the other fields, so a child meant to see less must set its own `level` explicitly. The level is set only in `config.yaml`, never in the URL, so a client cannot raise it. `detour` references are **not** rewritten. Don't point a visible outbound's `detour` at a hidden tag, or sing-box will fail to start on lower-level clients.
 
 Levels only apply to sing-box output. Clash output is unaffected.
+
+### Rule Labels
+
+Some rules are only wanted by some clients, for example an ad-blocking rule that a client already handles itself. Mark rules or rule-sets in the sing-box base config with a `label`, a string or a list of strings:
+
+```json
+"route": {
+  "rule_set": [
+    { "type": "remote", "tag": "anti-ads", "label": "ads", "format": "binary", "url": "..." }
+  ],
+  "rules": [
+    { "label": "ads", "rule_set": ["geosite-category-ads-all"], "action": "reject" },
+    { "rule_set": ["geosite-category-ads-all", "anti-ads"], "action": "reject" },
+    { "label": ["cn", "lan"], "ip_is_private": true, "outbound": "direct" },
+    { "domain_suffix": ["example.com"], "outbound": "proxy" }
+  ]
+},
+"dns": {
+  "rules": [
+    { "label": "ads", "rule_set": ["geosite-category-ads-all"], "action": "reject" }
+  ]
+}
+```
+
+On every `?method=singbox` request:
+
+- `?no-label=ads,cn` removes every top-level rule in `route.rules` and `dns.rules` that has one of those labels. Labels are matched exactly and case-sensitively; empty entries and unknown labels are ignored.
+- A label on a sub-rule of a logical rule removes the whole top-level rule, since dropping just that sub-rule could make the rule match more.
+- `?no-label=ads` also removes every entry in `route.rule_set` labeled `ads`, and strips its tag from the `rule_set` match of the remaining `route.rules` and `dns.rules`. A rule whose `rule_set` list ends up empty is dropped entirely, the same as for [WireGuard endpoints](#wireguard-key-pairs). In the example above, the second rule keeps `geosite-category-ads-all`.
+- `label` is stripped from every kept rule and rule-set, so sing-box never sees it.
+
+Rules converted from `config.yaml` cannot carry labels.
+
+### Unused Rule-Sets
+
+On every `?method=singbox` request, a `route.rule_set` entry is removed if a rule in `route.rules` or `dns.rules` (including logical sub-rules) referenced it in the base config, but none does after filtering. Rules can be removed by [labels](#rule-labels), [levels](#client-levels), unselected [WireGuard endpoints](#wireguard-key-pairs) or `?tun=false`. This keeps sing-box from downloading rule-sets nothing uses. Rule-sets that the base config never references are left as-is.
 
 ### sing-box Rule-Set Serving
 

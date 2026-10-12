@@ -739,6 +739,131 @@ pub fn apply_level(cfg: &mut Value, client_level: u32) {
     prune_tag_references(cfg, &removed);
 }
 
+// ── Rule labels ──────────────────────────────────────────────────────────────
+
+/// Remove every top-level rule in `route.rules` and `dns.rules` that carries a
+/// `label` in `labels`, either on itself or on any logical sub-rule. Dropping
+/// only the labeled sub-rule could widen what the rule matches, so the whole
+/// top-level rule goes.
+///
+/// Entries in `route.rule_set` with a matching `label` are removed too, and
+/// their tags are stripped from the `rule_set` match of the remaining rules
+/// (see [`prune_rule_match`]); a rule whose `rule_set` list ends up empty is
+/// dropped.
+///
+/// `label` may be a string or a list of strings, and is stripped from every
+/// kept rule and rule-set so sing-box never sees it.
+pub fn remove_labeled_rules(cfg: &mut Value, labels: &std::collections::HashSet<&str>) {
+    let mut removed: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    if let Some(arr) = cfg
+        .get_mut("route")
+        .and_then(|r| r.get_mut("rule_set"))
+        .and_then(Value::as_array_mut)
+    {
+        arr.retain_mut(|entry| {
+            let Some(label) = entry.as_object_mut().and_then(|o| o.remove("label")) else {
+                return true;
+            };
+            if !label_matches(&label, labels) {
+                return true;
+            }
+            if let Some(tag) = tag_of(entry) {
+                removed.insert(tag.to_string());
+            }
+            false
+        });
+    }
+
+    for section in ["route", "dns"] {
+        if let Some(rules) = cfg
+            .get_mut(section)
+            .and_then(|s| s.get_mut("rules"))
+            .and_then(Value::as_array_mut)
+        {
+            rules.retain_mut(|r| {
+                !take_rule_labels(r, labels) && prune_rule_match(r, &["rule_set"], &removed)
+            });
+        }
+    }
+}
+
+/// Strip `label` from a rule and its logical sub-rules. Returns `true` if any
+/// of them carried a label in `labels`.
+fn take_rule_labels(rule: &mut Value, labels: &std::collections::HashSet<&str>) -> bool {
+    let mut matched = false;
+    if let Some(sub) = rule.get_mut("rules").and_then(Value::as_array_mut) {
+        for r in sub.iter_mut() {
+            matched |= take_rule_labels(r, labels);
+        }
+    }
+    let Some(label) = rule.as_object_mut().and_then(|o| o.remove("label")) else {
+        return matched;
+    };
+    matched || label_matches(&label, labels)
+}
+
+/// Whether a `label` value (a string or a list of strings) contains one of
+/// `labels`.
+fn label_matches(label: &Value, labels: &std::collections::HashSet<&str>) -> bool {
+    match label {
+        Value::String(l) => labels.contains(l.as_str()),
+        Value::Array(list) => list
+            .iter()
+            .any(|v| v.as_str().is_some_and(|l| labels.contains(l))),
+        _ => false,
+    }
+}
+
+// ── Unused rule-sets ─────────────────────────────────────────────────────────
+
+/// Collect the rule-set tags referenced by `route.rules` and `dns.rules`,
+/// including logical sub-rules.
+pub fn rule_set_references(cfg: &Value) -> std::collections::HashSet<String> {
+    fn collect(rule: &Value, used: &mut std::collections::HashSet<String>) {
+        match &rule["rule_set"] {
+            Value::String(t) => {
+                used.insert(t.clone());
+            }
+            Value::Array(list) => {
+                used.extend(list.iter().filter_map(Value::as_str).map(str::to_string))
+            }
+            _ => {}
+        }
+        for sub in rule["rules"].as_array().into_iter().flatten() {
+            collect(sub, used);
+        }
+    }
+
+    let mut used = std::collections::HashSet::new();
+    for section in ["route", "dns"] {
+        for rule in cfg[section]["rules"].as_array().into_iter().flatten() {
+            collect(rule, &mut used);
+        }
+    }
+    used
+}
+
+/// Remove entries from `route.rule_set` that were referenced in
+/// `previously_used` (see [`rule_set_references`]) but no longer are, e.g.
+/// after their rules were removed by labels, levels or WireGuard pruning.
+/// Rule-sets that were never referenced are left as-is.
+pub fn prune_unused_rule_sets(
+    cfg: &mut Value,
+    previously_used: &std::collections::HashSet<String>,
+) {
+    let used = rule_set_references(cfg);
+    if let Some(arr) = cfg
+        .get_mut("route")
+        .and_then(|r| r.get_mut("rule_set"))
+        .and_then(Value::as_array_mut)
+    {
+        arr.retain(|entry| {
+            tag_of(entry).is_none_or(|t| used.contains(t) || !previously_used.contains(t))
+        });
+    }
+}
+
 // ── WireGuard per-device keys ────────────────────────────────────────────────
 
 /// Resolve WireGuard endpoints in a base config against per-device keys.
@@ -1561,6 +1686,133 @@ mod tests {
         assert_eq!(base["outbounds"].as_array().unwrap().len(), 4);
         assert_eq!(base["route"]["rules"].as_array().unwrap().len(), 2);
         assert!(!base.to_string().contains("\"level\""));
+    }
+
+    fn label_base() -> Value {
+        json!({
+            "route": {
+                "rules": [
+                    {"label": "ads", "rule_set": ["geosite-ads"], "action": "reject"},
+                    {"label": ["cn", "lan"], "ip_is_private": true, "outbound": "direct"},
+                    {
+                        "type": "logical",
+                        "mode": "and",
+                        "rules": [
+                            {"label": "cn", "rule_set": ["geoip-cn"]},
+                            {"port": [443]},
+                        ],
+                        "outbound": "direct",
+                    },
+                    {"label": 1, "domain": ["example.com"], "outbound": "proxy"},
+                    {"domain": ["example.org"], "outbound": "proxy"},
+                ],
+            },
+            "dns": {
+                "rules": [
+                    {"label": "ads", "rule_set": ["geosite-ads"], "action": "reject"},
+                    {"rule_set": ["geosite-cn"], "server": "local"},
+                ],
+            },
+        })
+    }
+
+    #[test]
+    fn labeled_rules_removed() {
+        let mut cfg = label_base();
+        remove_labeled_rules(&mut cfg, &["ads", "cn"].into());
+        assert!(!cfg.to_string().contains("\"label\""));
+        assert_eq!(
+            cfg["route"]["rules"],
+            json!([
+                {"domain": ["example.com"], "outbound": "proxy"},
+                {"domain": ["example.org"], "outbound": "proxy"},
+            ])
+        );
+        assert_eq!(
+            cfg["dns"]["rules"],
+            json!([{"rule_set": ["geosite-cn"], "server": "local"}])
+        );
+    }
+
+    #[test]
+    fn labeled_rules_only_stripped_without_matching_labels() {
+        let mut cfg = label_base();
+        remove_labeled_rules(&mut cfg, &["unknown"].into());
+        assert!(!cfg.to_string().contains("\"label\""));
+        assert_eq!(cfg["route"]["rules"].as_array().unwrap().len(), 5);
+        assert_eq!(
+            cfg["route"]["rules"][2]["rules"][0],
+            json!({"rule_set": ["geoip-cn"]})
+        );
+        assert_eq!(cfg["dns"]["rules"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn labeled_rule_set_removed_with_references() {
+        let mut cfg = json!({
+            "route": {
+                "rule_set": [
+                    {"type": "remote", "tag": "anti-ads", "label": "ads"},
+                    {"type": "remote", "tag": "geosite-ads", "label": ["other"]},
+                    {"type": "remote", "tag": "geosite-cn"},
+                ],
+                "rules": [
+                    {"rule_set": ["geosite-ads", "anti-ads"], "action": "reject"},
+                    {"rule_set": "anti-ads", "action": "reject"},
+                    {
+                        "type": "logical",
+                        "mode": "or",
+                        "rules": [{"rule_set": ["anti-ads"]}, {"domain": ["ads.example.com"]}],
+                        "action": "reject",
+                    },
+                    {"rule_set": ["geosite-cn"], "outbound": "direct"},
+                ],
+            },
+            "dns": {
+                "rules": [{"rule_set": ["anti-ads"], "action": "reject"}],
+            },
+        });
+        remove_labeled_rules(&mut cfg, &["ads"].into());
+        assert!(!cfg.to_string().contains("\"label\""));
+        assert_eq!(
+            cfg["route"]["rule_set"],
+            json!([
+                {"type": "remote", "tag": "geosite-ads"},
+                {"type": "remote", "tag": "geosite-cn"},
+            ])
+        );
+        assert_eq!(
+            cfg["route"]["rules"],
+            json!([
+                {"rule_set": ["geosite-ads"], "action": "reject"},
+                {"rule_set": ["geosite-cn"], "outbound": "direct"},
+            ])
+        );
+        assert!(cfg["dns"]["rules"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rule_sets_left_unused_are_pruned() {
+        let mut cfg = label_base();
+        cfg["route"]["rule_set"] = json!([
+            {"type": "remote", "tag": "geosite-ads"},
+            {"type": "remote", "tag": "geoip-cn"},
+            {"type": "remote", "tag": "geosite-cn"},
+            {"type": "remote", "tag": "spare"},
+        ]);
+        let used = rule_set_references(&cfg);
+        assert!(used.contains("geoip-cn"), "logical sub-rules are scanned");
+        assert!(!used.contains("spare"));
+
+        remove_labeled_rules(&mut cfg, &["ads", "cn"].into());
+        prune_unused_rule_sets(&mut cfg, &used);
+        let tags: Vec<&str> = cfg["route"]["rule_set"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(tag_of)
+            .collect();
+        assert_eq!(tags, ["geosite-cn", "spare"]);
     }
 
     #[test]
