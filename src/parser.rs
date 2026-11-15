@@ -479,9 +479,23 @@ mod ruleset_config {
         pub wireguard: Vec<WireguardKey>,
     }
 
+    /// One named device key. `tag_map` carries the per-endpoint material, so a
+    /// single name can hold a different private key for each endpoint tag.
+    ///
+    /// The flat form (`tag`, `private_key`, `address`, `pre_shared_key` directly
+    /// on the entry) is still accepted and counts as one more `tag_map` item.
     #[derive(Clone, Debug, Deserialize)]
+    #[serde(from = "RawWireguardKey")]
     pub struct WireguardKey {
         name: String,
+        tag_map: Vec<WireguardTagKey>,
+        /// Subscriptions this key is served on. Empty means every subscription.
+        subs: Vec<String>,
+    }
+
+    /// Key material for one `wireguard` endpoint of the sing-box base config.
+    #[derive(Clone, Debug, Deserialize)]
+    pub struct WireguardTagKey {
         /// Tag of the `wireguard` endpoint in the sing-box base config.
         tag: String,
         #[serde(alias = "private-key")]
@@ -491,51 +505,75 @@ mod ruleset_config {
         /// Set on every peer of the endpoint when this key is selected.
         #[serde(default, alias = "pre-shared-key")]
         pre_shared_key: Option<String>,
-        /// Subscriptions this key is served on. Empty means every subscription.
-        #[serde(default)]
-        subs: Vec<String>,
     }
 
-    impl WireguardKey {
-        pub fn name(&self) -> &str {
-            &self.name
+    #[derive(Deserialize)]
+    struct RawWireguardKey {
+        name: String,
+        #[serde(default, alias = "tag-map", deserialize_with = "one_or_many")]
+        tag_map: Vec<WireguardTagKey>,
+        #[serde(default)]
+        subs: Vec<String>,
+        // Flat (legacy) form.
+        tag: Option<String>,
+        #[serde(alias = "private-key")]
+        private_key: Option<String>,
+        #[serde(default)]
+        address: Vec<String>,
+        #[serde(default, alias = "pre-shared-key")]
+        pre_shared_key: Option<String>,
+    }
+
+    /// Accept either a single mapping or a list of mappings.
+    fn one_or_many<'de, D>(deserializer: D) -> Result<Vec<WireguardTagKey>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum OneOrMany {
+            Many(Vec<WireguardTagKey>),
+            One(WireguardTagKey),
         }
+        Ok(match OneOrMany::deserialize(deserializer)? {
+            OneOrMany::Many(v) => v,
+            OneOrMany::One(v) => vec![v],
+        })
+    }
+
+    impl From<RawWireguardKey> for WireguardKey {
+        fn from(raw: RawWireguardKey) -> Self {
+            let mut tag_map = Vec::new();
+            if let (Some(tag), Some(private_key)) = (raw.tag, raw.private_key) {
+                log::warn!(
+                    "WireGuard key '{}': flat `tag`/`private_key` form is deprecated, \
+                     move it into `tag_map`",
+                    raw.name
+                );
+                tag_map.push(WireguardTagKey {
+                    tag,
+                    private_key,
+                    address: raw.address,
+                    pre_shared_key: raw.pre_shared_key,
+                });
+            } else if raw.tag_map.is_empty() {
+                log::warn!(
+                    "WireGuard key '{}' has neither `tag_map` nor `tag` + `private_key`",
+                    raw.name
+                );
+            }
+            tag_map.extend(raw.tag_map);
+            Self {
+                name: raw.name,
+                tag_map,
+                subs: raw.subs,
+            }
+        }
+    }
+
+    impl WireguardTagKey {
         pub fn tag(&self) -> &str {
             &self.tag
-        }
-        pub fn subs(&self) -> &[String] {
-            &self.subs
-        }
-        pub fn allowed_for(&self, sub_id: &str) -> bool {
-            self.subs.is_empty() || self.subs.iter().any(|s| s == sub_id)
-        }
-        /// Resolve a comma-separated `?wg=` value against `keys` for `sub_id`.
-        ///
-        /// Empty entries, unknown names and keys not allowed for `sub_id` are
-        /// skipped. Returns the conflicting tag as `Err` if two selected keys
-        /// target the same endpoint.
-        pub fn select<'a>(
-            keys: &'a [WireguardKey],
-            names: &str,
-            sub_id: &str,
-        ) -> Result<Vec<&'a WireguardKey>, String> {
-            let mut selected: Vec<&WireguardKey> = Vec::new();
-            for name in names.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                let Some(key) = keys
-                    .iter()
-                    .find(|k| k.name == name && k.allowed_for(sub_id))
-                else {
-                    continue;
-                };
-                if selected.iter().any(|k| k.name == key.name) {
-                    continue;
-                }
-                if selected.iter().any(|k| k.tag == key.tag) {
-                    return Err(key.tag.clone());
-                }
-                selected.push(key);
-            }
-            Ok(selected)
         }
         /// Fields merged into the matching endpoint when this key is selected.
         pub fn patch(&self) -> serde_json::Value {
@@ -547,6 +585,56 @@ mod ruleset_config {
                 patch["peers"] = serde_json::json!({ "pre_shared_key": psk });
             }
             patch
+        }
+    }
+
+    impl WireguardKey {
+        pub fn name(&self) -> &str {
+            &self.name
+        }
+        pub fn subs(&self) -> &[String] {
+            &self.subs
+        }
+        pub fn allowed_for(&self, sub_id: &str) -> bool {
+            self.subs.is_empty() || self.subs.iter().any(|s| s == sub_id)
+        }
+        /// Every endpoint tag any of `keys` can patch.
+        pub fn managed_tags(keys: &[WireguardKey]) -> Vec<&str> {
+            keys.iter()
+                .flat_map(|k| k.tag_map.iter().map(WireguardTagKey::tag))
+                .collect()
+        }
+        /// Resolve a comma-separated `?wg=` value against `keys` for `sub_id`.
+        ///
+        /// A name may be shared by several entries; all of them that are
+        /// allowed for `sub_id` are selected, and so is every `tag_map` item.
+        /// Empty entries, unknown names and keys not allowed for `sub_id` are
+        /// skipped. Returns the conflicting tag as `Err` if two selected items
+        /// target the same endpoint.
+        pub fn select<'a>(
+            keys: &'a [WireguardKey],
+            names: &str,
+            sub_id: &str,
+        ) -> Result<Vec<&'a WireguardTagKey>, String> {
+            let mut seen: Vec<&str> = Vec::new();
+            let mut selected: Vec<&WireguardTagKey> = Vec::new();
+            for name in names.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                if seen.contains(&name) {
+                    continue;
+                }
+                seen.push(name);
+                for item in keys
+                    .iter()
+                    .filter(|k| k.name == name && k.allowed_for(sub_id))
+                    .flat_map(|k| &k.tag_map)
+                {
+                    if selected.iter().any(|k| k.tag == item.tag) {
+                        return Err(item.tag.clone());
+                    }
+                    selected.push(item);
+                }
+            }
+            Ok(selected)
         }
     }
 }
@@ -1548,27 +1636,34 @@ mod tests {
 - { name: phone-office, tag: wg-office, private_key: b }
 - { name: laptop, tag: wg-home, private_key: c }
 - { name: alice-only, tag: wg-lab, private_key: d, subs: [alice] }
+- { name: both, tag: wg-home, private_key: e }
+- { name: both, tag: wg-office, private_key: f }
+- name: mapped
+  subs: [alice]
+  tag_map:
+    - { tag: wg-a, private_key: g, address: [10.0.0.1/24] }
+    - { tag: wg-b, private_key: h, pre_shared_key: psk }
 "#,
         )
         .unwrap()
     }
 
-    fn selected_names(keys: &[&WireguardKey]) -> Vec<String> {
-        keys.iter().map(|k| k.name().to_string()).collect()
+    fn selected_tags(keys: &[&super::ruleset_config::WireguardTagKey]) -> Vec<String> {
+        keys.iter().map(|k| k.tag().to_string()).collect()
     }
 
     #[test]
     fn wireguard_select_comma_separated() {
         let keys = wg_keys();
         let sel = WireguardKey::select(&keys, "phone, phone-office", "bob").unwrap();
-        assert_eq!(selected_names(&sel), ["phone", "phone-office"]);
+        assert_eq!(selected_tags(&sel), ["wg-home", "wg-office"]);
     }
 
     #[test]
     fn wireguard_select_skips_empty_unknown_and_duplicate() {
         let keys = wg_keys();
         let sel = WireguardKey::select(&keys, ",phone,,typo,phone,", "bob").unwrap();
-        assert_eq!(selected_names(&sel), ["phone"]);
+        assert_eq!(selected_tags(&sel), ["wg-home"]);
         assert!(WireguardKey::select(&keys, "", "bob").unwrap().is_empty());
     }
 
@@ -1577,6 +1672,82 @@ mod tests {
         let keys = wg_keys();
         let err = WireguardKey::select(&keys, "phone,laptop", "bob").unwrap_err();
         assert_eq!(err, "wg-home");
+    }
+
+    #[test]
+    fn wireguard_select_one_name_many_tags() {
+        let keys = wg_keys();
+        let sel = WireguardKey::select(&keys, "both,both", "bob").unwrap();
+        let pairs: Vec<_> = sel
+            .iter()
+            .map(|k| (k.tag(), k.patch()["private_key"].clone()))
+            .collect();
+        assert_eq!(pairs, [("wg-home", "e".into()), ("wg-office", "f".into())]);
+        // A shared name still conflicts with another selected key on the same tag.
+        assert_eq!(
+            WireguardKey::select(&keys, "both,phone", "bob").unwrap_err(),
+            "wg-home"
+        );
+    }
+
+    #[test]
+    fn wireguard_tag_map_selects_every_item() {
+        let keys = wg_keys();
+        assert!(
+            WireguardKey::select(&keys, "mapped", "bob")
+                .unwrap()
+                .is_empty()
+        );
+        let sel = WireguardKey::select(&keys, "mapped", "alice").unwrap();
+        assert_eq!(selected_tags(&sel), ["wg-a", "wg-b"]);
+        assert_eq!(sel[0].patch()["private_key"], "g");
+        assert_eq!(sel[0].patch()["address"][0], "10.0.0.1/24");
+        assert_eq!(sel[1].patch()["peers"]["pre_shared_key"], "psk");
+        assert_eq!(
+            WireguardKey::managed_tags(&keys),
+            [
+                "wg-home",
+                "wg-office",
+                "wg-home",
+                "wg-lab",
+                "wg-home",
+                "wg-office",
+                "wg-a",
+                "wg-b"
+            ]
+        );
+    }
+
+    #[test]
+    fn wireguard_tag_map_accepts_single_mapping() {
+        let keys: Vec<WireguardKey> = serde_yaml::from_str(
+            r#"
+- name: mba
+  tag_map:
+    tag: wg-a
+    private_key: k
+    address:
+      - 10.0.0.2/24
+  subs: [s]
+"#,
+        )
+        .unwrap();
+        let sel = WireguardKey::select(&keys, "mba", "s").unwrap();
+        assert_eq!(selected_tags(&sel), ["wg-a"]);
+    }
+
+    #[test]
+    fn wireguard_tag_map_conflict_within_one_entry() {
+        let keys: Vec<WireguardKey> = serde_yaml::from_str(
+            r#"
+- name: x
+  tag_map:
+    - { tag: t, private_key: a }
+    - { tag: t, private_key: b }
+"#,
+        )
+        .unwrap();
+        assert_eq!(WireguardKey::select(&keys, "x", "s").unwrap_err(), "t");
     }
 
     #[test]
@@ -1639,8 +1810,10 @@ keyword: { filter: [], accepted: [] }
 "#,
         )
         .unwrap();
-        assert_eq!(keys[0].patch()["peers"]["pre_shared_key"], "psk");
-        assert!(keys[1].patch().get("peers").is_none());
+        let a = WireguardKey::select(&keys, "a", "s").unwrap();
+        let b = WireguardKey::select(&keys, "b", "s").unwrap();
+        assert_eq!(a[0].patch()["peers"]["pre_shared_key"], "psk");
+        assert!(b[0].patch().get("peers").is_none());
     }
 
     #[test]
@@ -1652,6 +1825,6 @@ keyword: { filter: [], accepted: [] }
                 .is_empty()
         );
         let sel = WireguardKey::select(&keys, "alice-only", "alice").unwrap();
-        assert_eq!(selected_names(&sel), ["alice-only"]);
+        assert_eq!(selected_tags(&sel), ["wg-lab"]);
     }
 }

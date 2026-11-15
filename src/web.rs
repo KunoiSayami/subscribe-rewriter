@@ -138,7 +138,7 @@ pub mod v2 {
                     .filter(|s| !s.is_empty())
                     .collect();
                 crate::singbox::remove_labeled_rules(base, &labels);
-                let managed_tags: Vec<&str> = wg_keys.iter().map(|k| k.tag()).collect();
+                let managed_tags = WireguardKey::managed_tags(wg_keys);
                 let patches: Vec<(&str, serde_json::Value)> =
                     selected.iter().map(|k| (k.tag(), k.patch())).collect();
                 crate::singbox::apply_wireguard(base, &managed_tags, &patches);
