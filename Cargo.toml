@@ -1,13 +1,13 @@
 [package]
 name = "subscribe-rewriter"
-version = "0.36.0"
+version = "0.37.0"
 edition = "2024"
 default-run = "subscribe-rewriter"
 
 [dependencies]
 anyhow = "1"
 axum = "0.8"
-axum-server = "0.8"
+axum-server = "0.9"
 clap = { version = "4", features = ["cargo"] }
 env_logger = "^0.11"
 log = { version = "0.4", features = [
