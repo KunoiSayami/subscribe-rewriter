@@ -474,9 +474,68 @@ mod ruleset_config {
         /// Defaults to "direct" if unset.
         #[serde(default, alias = "direct-tag")]
         pub direct_tag: Option<String>,
-        /// Per-device WireGuard keys, selected via `?wg=<name>`.
+        /// WireGuard device keys, selected via `?wg=<name>`.
         #[serde(default)]
-        pub wireguard: Vec<WireguardKey>,
+        pub wireguard: WireguardConfig,
+    }
+
+    /// `singbox.wireguard`: `{ subs, clients }`, or (deprecated) a bare list of
+    /// clients.
+    #[derive(Clone, Debug, Default)]
+    pub struct WireguardConfig {
+        /// `subs` for every client that does not set its own. A client with an
+        /// explicit `subs: []` is still served on every subscription.
+        subs: Vec<String>,
+        clients: Vec<WireguardKey>,
+    }
+
+    impl<'de> Deserialize<'de> for WireguardConfig {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            #[derive(Deserialize)]
+            struct Grouped {
+                #[serde(default)]
+                subs: Vec<String>,
+                #[serde(default)]
+                clients: Vec<WireguardKey>,
+            }
+            #[derive(Deserialize)]
+            #[serde(untagged)]
+            enum Form {
+                Grouped(Grouped),
+                List(Vec<WireguardKey>),
+            }
+            Ok(match Form::deserialize(deserializer)? {
+                Form::Grouped(g) => Self {
+                    subs: g.subs,
+                    clients: g.clients,
+                },
+                Form::List(clients) => {
+                    log::warn!(
+                        "`singbox.wireguard` as a bare list is deprecated, \
+                         move it under `singbox.wireguard.clients`"
+                    );
+                    Self {
+                        subs: Vec::new(),
+                        clients,
+                    }
+                }
+            })
+        }
+    }
+
+    impl WireguardConfig {
+        pub fn clients(&self) -> &[WireguardKey] {
+            &self.clients
+        }
+        /// Give every client without its own `subs` the default list.
+        pub fn apply_default_subs(&mut self) {
+            for key in &mut self.clients {
+                key.apply_default_subs(&self.subs);
+            }
+        }
     }
 
     /// One named device key. `tag_map` carries the per-endpoint material, so a
@@ -489,8 +548,9 @@ mod ruleset_config {
     pub struct WireguardKey {
         name: String,
         tag_map: Vec<WireguardTagKey>,
-        /// Subscriptions this key is served on. Empty means every subscription.
-        subs: Vec<String>,
+        /// Subscriptions this key is served on. `None` (unset) takes the
+        /// `wireguard.subs`; empty means every subscription.
+        subs: Option<Vec<String>>,
     }
 
     /// Key material for one `wireguard` endpoint of the sing-box base config.
@@ -512,8 +572,7 @@ mod ruleset_config {
         name: String,
         #[serde(default, alias = "tag-map", deserialize_with = "one_or_many")]
         tag_map: Vec<WireguardTagKey>,
-        #[serde(default)]
-        subs: Vec<String>,
+        subs: Option<Vec<String>>,
         // Flat (legacy) form.
         tag: Option<String>,
         #[serde(alias = "private-key")]
@@ -593,10 +652,16 @@ mod ruleset_config {
             &self.name
         }
         pub fn subs(&self) -> &[String] {
-            &self.subs
+            self.subs.as_deref().unwrap_or_default()
         }
         pub fn allowed_for(&self, sub_id: &str) -> bool {
-            self.subs.is_empty() || self.subs.iter().any(|s| s == sub_id)
+            self.subs().is_empty() || self.subs().iter().any(|s| s == sub_id)
+        }
+        /// Take `default` as `subs` unless this key set its own.
+        pub fn apply_default_subs(&mut self, default: &[String]) {
+            if self.subs.is_none() && !default.is_empty() {
+                self.subs = Some(default.to_vec());
+            }
         }
         /// Every endpoint tag any of `keys` can patch.
         pub fn managed_tags(keys: &[WireguardKey]) -> Vec<&str> {
@@ -825,7 +890,7 @@ mod configure {
         }
 
         pub fn singbox_wireguard(&self) -> &[WireguardKey] {
-            &self.singbox.wireguard
+            self.singbox.wireguard.clients()
         }
 
         /// Load and return the raw YAML value without resolving inheritance or
@@ -868,6 +933,7 @@ mod configure {
 
             let mut ret = Self::from_yaml(raw)?;
             ret.resolve_inheritance()?;
+            ret.singbox.wireguard.apply_default_subs();
 
             let mut rules_count = 0;
 
@@ -1428,13 +1494,14 @@ mod share_config {
 
         pub fn briefing(&self) -> String {
             format!(
-                "Find {} subscriptions (total {} alias), {} rules, {} proxies, {} groups, {} wireguard keys",
+                "Find {} subscriptions (total {} alias), {} rules, {} proxies, {} groups, {} wireguard keys ({} tag keys)",
                 self.upstream.len(),
                 self.alias_map.len(),
                 self.rules.len(),
                 self.proxies.len(),
                 self.groups.len(),
                 self.singbox_wireguard.len(),
+                WireguardKey::managed_tags(&self.singbox_wireguard).len(),
             )
         }
 
@@ -1734,6 +1801,44 @@ mod tests {
         .unwrap();
         let sel = WireguardKey::select(&keys, "mba", "s").unwrap();
         assert_eq!(selected_tags(&sel), ["wg-a"]);
+    }
+
+    #[test]
+    fn wireguard_default_subs_applies_unless_overridden() {
+        let mut cfg: super::ruleset_config::SingboxConfigure = serde_yaml::from_str(
+            r#"
+wireguard:
+  subs: [alice]
+  clients:
+    - { name: dflt, tag: a, private_key: k }
+    - { name: own, tag: b, private_key: k, subs: [bob] }
+    - { name: all, tag: c, private_key: k, subs: [] }
+"#,
+        )
+        .unwrap();
+        cfg.wireguard.apply_default_subs();
+        let pick = |names: &str, sub: &str| {
+            selected_tags(&WireguardKey::select(cfg.wireguard.clients(), names, sub).unwrap())
+        };
+        assert_eq!(pick("dflt", "alice"), ["a"]);
+        assert!(pick("dflt", "bob").is_empty());
+        assert_eq!(pick("own", "bob"), ["b"]);
+        assert!(pick("own", "alice").is_empty());
+        assert_eq!(pick("all", "carol"), ["c"]);
+    }
+
+    #[test]
+    fn wireguard_bare_list_is_still_accepted() {
+        let mut cfg: super::ruleset_config::SingboxConfigure = serde_yaml::from_str(
+            r#"
+wireguard:
+  - { name: a, tag: t, private_key: k }
+"#,
+        )
+        .unwrap();
+        cfg.wireguard.apply_default_subs();
+        let sel = WireguardKey::select(cfg.wireguard.clients(), "a", "anyone").unwrap();
+        assert_eq!(selected_tags(&sel), ["t"]);
     }
 
     #[test]

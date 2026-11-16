@@ -163,22 +163,25 @@ singbox:
 
   # Per-device WireGuard keys, selected with ?method=singbox&wg=<name>[,<name>...]
   wireguard:
-    - name: phone
-      subs:                             # optional; only served on these sub_ids (default: all)
-        - alice
-      tag_map:                          # one item per wireguard endpoint this device uses
-        - tag: wg-home                  # tag of the wireguard endpoint in the base config
-          private_key: "yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk="
-          address:                      # optional; overrides the endpoint's address
-            - 10.0.0.2/32
-          pre_shared_key: "..."         # optional; set on every peer of the endpoint
-        - tag: wg-office
-          private_key: "..."
-          address:
-            - 10.1.0.2/32
-    - name: laptop
-      tag_map:
-        - tag: wg-home
+    subs:                               # optional; default `subs` for every client below
+      - alice                           # that does not set its own (`subs: []` = all subs)
+    clients:
+      - name: phone
+        subs:                           # optional; only served on these sub_ids
+          - alice
+        tag_map:                        # one item per wireguard endpoint this device uses
+          - tag: wg-home                # tag of the wireguard endpoint in the base config
+            private_key: "yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk="
+            address:                    # optional; overrides the endpoint's address
+              - 10.0.0.2/32
+            pre_shared_key: "..."       # optional; set on every peer of the endpoint
+          - tag: wg-office
+            private_key: "..."
+            address:
+              - 10.1.0.2/32
+      - name: laptop
+        tag_map:                        # a single mapping is accepted for one endpoint
+          tag: wg-home
           private_key: "..."
           address:
             - 10.0.0.3/32
@@ -258,7 +261,7 @@ Each device needs its own WireGuard key pair, and some devices should not get th
 Every `wireguard` endpoint whose tag appears in `singbox.wireguard` is *managed*:
 
 - `?wg=` takes a comma-separated list of key names, e.g. `?wg=phone,phone-office`. Each selected name patches every endpoint in its `tag_map` (a list, or a single mapping when there is only one endpoint), giving each one its own `private_key` and `address`. `address` is required by sing-box, so either the base endpoint or the key entry must provide it. If a `tag_map` item sets `pre_shared_key`, it is written to every peer in the endpoint's `peers`, overriding any value in the base config. Generate one with `sing-box generate rand --base64 32` and set the same value as the peer's Preshared Key on the server.
-- Empty entries and unknown names are ignored. A name with `subs` is only served on those `sub_id`s; on any other subscription it is ignored as if unknown, so its private key cannot be fetched by guessing the name. `subs` is matched exactly against the `sub_id` in the request URL, so an alias must be listed explicitly: `subs: [alice]` does not match a request to `alice`'s alias `alice-phone`, and vice versa. Listing only an alias binds the key to that one URL. Selecting two keys for the same tag returns `406`, whether they come from different names or from one `tag_map`. The older flat form (`tag`, `private_key`, `address`, `pre_shared_key` directly on the entry) is **deprecated**: it is still accepted as a one-item `tag_map`, but logs a warning on every config load, and several entries may share a `name`; `?wg=<name>` selects all of them, each subject to its own `subs`.
+- Empty entries and unknown names are ignored. `singbox.wireguard.subs` supplies `subs` for every client that leaves it unset; an explicit `subs: []` opts that name back into every subscription. A name with `subs` is only served on those `sub_id`s; on any other subscription it is ignored as if unknown, so its private key cannot be fetched by guessing the name. `subs` is matched exactly against the `sub_id` in the request URL, so an alias must be listed explicitly: `subs: [alice]` does not match a request to `alice`'s alias `alice-phone`, and vice versa. Listing only an alias binds the key to that one URL. Selecting two keys for the same tag returns `406`, whether they come from different names or from one `tag_map`. Several clients may share a `name`; `?wg=<name>` selects all of them, each subject to its own `subs`. Two older forms are **deprecated**: a bare list directly under `singbox.wireguard` (move it under `clients`), and the flat form with `tag`, `private_key`, `address` and `pre_shared_key` directly on the client (move them into `tag_map`). Both still load, and log a warning on every config load.
 - A managed endpoint with no selected key is removed and references to its tag are cleaned up:
   - group `outbounds` lists and a selector's `default` (groups left empty are pruned as usual);
   - `route.rules` whose `outbound` is that tag;
